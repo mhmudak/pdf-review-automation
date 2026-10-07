@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Environment / secrets
+.env
+*.json
+!sample-data/*.json
+
+# Google credentials
+credentials.json
+service-account*.json
+client_secret*.json
+
+# PDFs / production data
+*.pdf
+
+# Generated files
+output/
+tmp/
+temp/
+logs/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
