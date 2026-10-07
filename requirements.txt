@@ -1,3 +1,5 @@
-PyMuPDF
-google-api-python-client
-google-auth
+PyMuPDF==1.26.4
+google-api-python-client==2.184.0
+google-auth==2.41.1
+google-auth-httplib2==0.2.0
+python-dotenv==1.1.1
