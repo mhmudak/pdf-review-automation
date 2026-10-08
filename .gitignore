@@ -29,3 +29,4 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+!src/master_page_index.json
