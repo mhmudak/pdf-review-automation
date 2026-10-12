@@ -93,8 +93,32 @@ def process_drive_folder(
         f"| fingerprints={master_meta['fingerprint_count']}"
     )
 
-    # Backend source-of-truth spreadsheet:
-    # _Database / _Files / _Needs Review / _Config
+    # -------------------------------------------------
+    # LIGHTWEIGHT DRIVE PREFLIGHT
+    # -------------------------------------------------
+
+    results: list[dict[str, Any]] = []
+
+    pdf_files = drive.list_pdfs(
+        folder_id
+    )
+
+    print(
+        f"Drive scan complete: "
+        f"{len(pdf_files)} PDF(s) found."
+    )
+
+    # Nothing in the monitored folder means there is
+    # nothing else to initialize or read.
+    if not pdf_files:
+        return {
+            "files_seen": 0,
+            "results": [],
+            "dry_run": dry_run,
+        }
+
+    # Backend source-of-truth adapter.
+    # Creating the adapter itself does not read sheet data.
     backend_sheets = (
         None
         if dry_run
@@ -103,24 +127,75 @@ def process_drive_folder(
         )
     )
 
-    # Team-facing spreadsheet:
-    # reviewer tabs only
-    output_sheets = (
-        None
-        if dry_run
-        else SheetsAdapter(
-            output_spreadsheet_id
-        )
-    )
-
     by_id: dict[str, Any] = {}
     by_sha256: dict[str, Any] = {}
 
+    files_needing_processing = []
+
     if backend_sheets:
-        print(
-            "Preflight: validating backend Google Sheets state..."
+        # Idle-run optimization:
+        # read ONLY _Files before deciding whether any
+        # expensive work is necessary.
+        file_registry_values = (
+            backend_sheets.get_all_values(
+                "_Files"
+            )
         )
 
+        by_id, by_sha256 = build_registry(
+            file_registry_values
+        )
+
+        for f in pdf_files:
+            action, reason = precheck(
+                f,
+                by_id,
+            )
+
+            if action == "PROCESS":
+                files_needing_processing.append(
+                    f
+                )
+                continue
+
+            print(
+                f"Skipping unchanged PDF: "
+                f"{f.name}"
+            )
+
+            results.append(
+                {
+                    "file_id": f.file_id,
+                    "name": f.name,
+                    "action": action,
+                    "reason": reason,
+                }
+            )
+
+        # Critical cheap-path exit.
+        # No database read, no PDF download,
+        # no extraction, no output spreadsheet,
+        # and no notification work.
+        if not files_needing_processing:
+            print(
+                "Preflight complete: "
+                "all PDFs unchanged. "
+                "Exiting before heavy backend load."
+            )
+
+            return {
+                "files_seen": len(pdf_files),
+                "results": results,
+                "dry_run": dry_run,
+            }
+
+        print(
+            "Change detected: "
+            f"{len(files_needing_processing)} "
+            "PDF(s) require processing."
+        )
+
+        # Heavy backend state is initialized ONLY now.
         backend_sheets.ensure_headers(
             "_Files",
             FILES_HEADERS,
@@ -136,33 +211,33 @@ def process_drive_folder(
             NEEDS_REVIEW_HEADERS,
         )
 
-        # Read once at startup.
-        # SheetsAdapter keeps this cached for the execution.
-        database_values = backend_sheets.get_all_values(
-            "_Database"
-        )
-
-        print(
-            "Preflight: _Database loaded "
-            f"({max(len(database_values) - 1, 0)} records)."
-        )
-
-        file_registry_values = (
+        database_values = (
             backend_sheets.get_all_values(
-                "_Files"
+                "_Database"
             )
         )
 
-        by_id, by_sha256 = build_registry(
-            file_registry_values
+        print(
+            "Heavy backend loaded: "
+            f"{max(len(database_values) - 1, 0)} "
+            "database record(s)."
         )
 
-    results: list[dict[str, Any]] = []
+    else:
+        # Dry-run mode has no persistent registry,
+        # therefore process every discovered PDF.
+        files_needing_processing = list(
+            pdf_files
+        )
 
-    pdf_files = drive.list_pdfs(folder_id)
-
-    print(
-        f"Drive scan complete: {len(pdf_files)} PDF(s) found."
+    # Team-facing spreadsheet is also deferred until
+    # actual processing is required.
+    output_sheets = (
+        None
+        if dry_run
+        else SheetsAdapter(
+            output_spreadsheet_id
+        )
     )
 
     with tempfile.TemporaryDirectory(
@@ -171,33 +246,7 @@ def process_drive_folder(
 
         tmpdir = Path(tmp)
 
-        for f in pdf_files:
-
-            # -------------------------------------------------
-            # PRE-DOWNLOAD DRIVE-LEVEL CHECK
-            # -------------------------------------------------
-
-            if backend_sheets:
-                action, reason = precheck(
-                    f,
-                    by_id,
-                )
-
-                if action != "PROCESS":
-                    print(
-                        f"Skipping unchanged PDF: {f.name}"
-                    )
-
-                    results.append(
-                        {
-                            "file_id": f.file_id,
-                            "name": f.name,
-                            "action": action,
-                            "reason": reason,
-                        }
-                    )
-
-                    continue
+        for f in files_needing_processing:
 
             run_id = str(uuid.uuid4())
 

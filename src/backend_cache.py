@@ -108,3 +108,91 @@ class BackendSnapshot:
         return bool(
             self._files_by_sha.get(key)
         )
+
+
+def rows_to_dicts(
+    values: list[list[Any]],
+) -> list[dict[str, Any]]:
+    """
+    Convert a Google Sheets values matrix into dictionaries
+    using the first row as headers.
+    """
+
+    if not values:
+        return []
+
+    headers = [
+        str(value).strip()
+        for value in values[0]
+    ]
+
+    if not any(headers):
+        return []
+
+    output: list[
+        dict[str, Any]
+    ] = []
+
+    for row in values[1:]:
+        if not any(
+            str(value).strip()
+            for value in row
+        ):
+            continue
+
+        item = {}
+
+        for index, header in enumerate(
+            headers
+        ):
+            if not header:
+                continue
+
+            item[header] = (
+                row[index]
+                if index < len(row)
+                else ""
+            )
+
+        output.append(item)
+
+    return output
+
+
+def snapshot_from_batch_values(
+    batch: dict[
+        str,
+        list[list[Any]],
+    ],
+) -> BackendSnapshot:
+    """
+    Build the in-memory backend snapshot from one batchGet
+    response.
+    """
+
+    return BackendSnapshot(
+        documents=rows_to_dicts(
+            batch.get(
+                "_Documents",
+                [],
+            )
+        ),
+        files=rows_to_dicts(
+            batch.get(
+                "_Files",
+                [],
+            )
+        ),
+        entries=rows_to_dicts(
+            batch.get(
+                "_Entries_V2",
+                [],
+            )
+        ),
+        author_rules=rows_to_dicts(
+            batch.get(
+                "_Author Rules",
+                [],
+            )
+        ),
+    )

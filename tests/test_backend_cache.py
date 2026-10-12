@@ -84,3 +84,120 @@ def test_unknown_sha():
         "DOC1",
         "def",
     )
+
+
+def test_rows_to_dicts():
+    from backend_cache import rows_to_dicts
+
+    values = [
+        [
+            "Document Key",
+            "Entry ID",
+            "Active",
+        ],
+        [
+            "DOC1",
+            "A",
+            True,
+        ],
+        [
+            "DOC1",
+            "B",
+        ],
+    ]
+
+    rows = rows_to_dicts(values)
+
+    assert rows == [
+        {
+            "Document Key": "DOC1",
+            "Entry ID": "A",
+            "Active": True,
+        },
+        {
+            "Document Key": "DOC1",
+            "Entry ID": "B",
+            "Active": "",
+        },
+    ]
+
+
+def test_snapshot_from_batch_values():
+    from backend_cache import (
+        snapshot_from_batch_values,
+    )
+
+    batch = {
+        "_Documents": [
+            [
+                "Document Key",
+                "Current Version ID",
+            ],
+            [
+                "DOC1",
+                "V1",
+            ],
+        ],
+        "_Files": [
+            [
+                "Document Key",
+                "SHA256",
+            ],
+            [
+                "DOC1",
+                "abc",
+            ],
+        ],
+        "_Entries_V2": [
+            [
+                "Document Key",
+                "Entry ID",
+            ],
+            [
+                "DOC1",
+                "A",
+            ],
+        ],
+        "_Author Rules": [
+            [
+                "Rule ID",
+                "Status",
+            ],
+            [
+                "R1",
+                "APPROVED",
+            ],
+        ],
+    }
+
+    snapshot = (
+        snapshot_from_batch_values(
+            batch
+        )
+    )
+
+    assert (
+        snapshot.document("DOC1")[
+            "Current Version ID"
+        ]
+        == "V1"
+    )
+
+    assert snapshot.sha_known(
+        "DOC1",
+        "ABC",
+    )
+
+    assert (
+        snapshot.entry("A")[
+            "Document Key"
+        ]
+        == "DOC1"
+    )
+
+    assert (
+        snapshot.author_rules[0][
+            "Rule ID"
+        ]
+        == "R1"
+    )

@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
 from pipeline import (
     bool_env,
@@ -16,8 +16,6 @@ from pipeline import (
 
 app = Flask(__name__)
 
-# Cloud Run concurrency will also be 1, but keep an
-# application-level guard as defense in depth.
 _run_lock = threading.Lock()
 
 
@@ -51,9 +49,14 @@ def _run_pipeline() -> dict[str, Any]:
         "GOOGLE_DRIVE_FOLDER_ID",
     )
 
-    spreadsheet_id = env_first(
+    backend_spreadsheet_id = env_first(
         "WORKFLOW2_SPREADSHEET_ID",
         "GOOGLE_SHEETS_SPREADSHEET_ID",
+    )
+
+    output_spreadsheet_id = env_first(
+        "WORKFLOW2_OUTPUT_SPREADSHEET_ID",
+        "OUTPUT_SPREADSHEET_ID",
     )
 
     dry_run = bool_env(
@@ -65,20 +68,23 @@ def _run_pipeline() -> dict[str, Any]:
             "Drive folder ID is required"
         )
 
-    if (
-        not dry_run
-        and not spreadsheet_id
-    ):
-        raise RuntimeError(
-            "Spreadsheet ID is required "
-            "unless dry-run mode is enabled"
-        )
+    if not dry_run:
+        if not backend_spreadsheet_id:
+            raise RuntimeError(
+                "Backend spreadsheet ID is required"
+            )
+
+        if not output_spreadsheet_id:
+            raise RuntimeError(
+                "Output spreadsheet ID is required"
+            )
 
     master_index, config = _paths()
 
     return process_drive_folder(
         folder_id,
-        spreadsheet_id,
+        backend_spreadsheet_id,
+        output_spreadsheet_id,
         master_index,
         config,
         dry_run,
@@ -90,17 +96,18 @@ def health():
     return jsonify(
         {
             "status": "ok",
-            "service": (
-                "pdf-review-automation"
-            ),
+            "service": "pdf-review-automation",
         }
     ), 200
 
 
+@app.get("/")
+def root():
+    return health()
+
+
 @app.post("/run")
 def run():
-    # Scheduler sends POST.
-    # Cloud Run IAM performs the real authentication.
     if not _run_lock.acquire(
         blocking=False
     ):
@@ -138,11 +145,6 @@ def run():
 
     finally:
         _run_lock.release()
-
-
-@app.get("/")
-def root():
-    return health()
 
 
 if __name__ == "__main__":

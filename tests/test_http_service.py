@@ -92,3 +92,59 @@ def test_get_run_is_not_allowed():
     )
 
     assert response.status_code == 405
+
+def test_run_pipeline_passes_both_spreadsheets(
+    monkeypatch,
+):
+    from pathlib import Path
+
+    monkeypatch.setenv(
+        "WORKFLOW2_DRIVE_FOLDER_ID",
+        "folder-123",
+    )
+
+    monkeypatch.setenv(
+        "WORKFLOW2_SPREADSHEET_ID",
+        "backend-123",
+    )
+
+    monkeypatch.setenv(
+        "WORKFLOW2_OUTPUT_SPREADSHEET_ID",
+        "output-123",
+    )
+
+    monkeypatch.delenv(
+        "WORKFLOW2_DRY_RUN",
+        raising=False,
+    )
+
+    with patch.object(
+        http_service,
+        "_paths",
+        return_value=(
+            Path("master.json"),
+            Path("config.json"),
+        ),
+    ), patch.object(
+        http_service,
+        "process_drive_folder",
+        return_value={
+            "files_seen": 0,
+            "results": [],
+        },
+    ) as mocked:
+
+        result = (
+            http_service._run_pipeline()
+        )
+
+    mocked.assert_called_once_with(
+        "folder-123",
+        "backend-123",
+        "output-123",
+        Path("master.json"),
+        Path("config.json"),
+        False,
+    )
+
+    assert result["files_seen"] == 0

@@ -160,6 +160,15 @@ class SheetsAdapter:
         if sheet == "_Config":
             return "D"
 
+        if sheet == "_Documents":
+            return "J"
+
+        if sheet == "_Entries_V2":
+            return "AH"
+
+        if sheet == "_Author Rules":
+            return "K"
+
         # Reviewer-facing tabs use 12 columns.
         return "L"
 
@@ -257,6 +266,91 @@ class SheetsAdapter:
         self._values_cache[sheet] = values
 
         return values
+
+    def batch_get_values(
+        self,
+        sheets: list[str],
+        refresh: bool = False,
+    ) -> dict[str, list[list[Any]]]:
+        """
+        Fetch multiple sheet ranges in one Google Sheets API
+        values.batchGet request.
+
+        Results are cached for the rest of this execution.
+        """
+
+        if not sheets:
+            return {}
+
+        output: dict[
+            str,
+            list[list[Any]],
+        ] = {}
+
+        missing: list[str] = []
+
+        for sheet in sheets:
+            if (
+                not refresh
+                and sheet in self._values_cache
+            ):
+                output[sheet] = (
+                    self._values_cache[sheet]
+                )
+            else:
+                missing.append(sheet)
+
+        if missing:
+            ranges = [
+                (
+                    f"'{sheet}'!"
+                    f"A:{self._end_column(sheet)}"
+                )
+                for sheet in missing
+            ]
+
+            response = self._execute(
+                self.service
+                .spreadsheets()
+                .values()
+                .batchGet(
+                    spreadsheetId=(
+                        self.spreadsheet_id
+                    ),
+                    ranges=ranges,
+                    majorDimension="ROWS",
+                )
+            )
+
+            value_ranges = response.get(
+                "valueRanges",
+                [],
+            )
+
+            for index, sheet in enumerate(
+                missing
+            ):
+                values = []
+
+                if index < len(value_ranges):
+                    values = (
+                        value_ranges[index]
+                        .get("values", [])
+                    )
+
+                self._values_cache[
+                    sheet
+                ] = values
+
+                output[sheet] = values
+
+        return {
+            sheet: output.get(
+                sheet,
+                [],
+            )
+            for sheet in sheets
+        }
 
     def append_rows(
         self,
