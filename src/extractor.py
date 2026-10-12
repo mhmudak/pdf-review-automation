@@ -130,6 +130,86 @@ def build_master_index(master_pdf: Path) -> dict[str, dict[str, Any]]:
 def load_master_index(path: Path) -> dict[str, dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
+def master_index_metadata(
+    path: Path,
+    index: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    digest = sha256_file(path)
+
+    master_pages = [
+        int(item.get("master_pdf_page", 0))
+        for item in index.values()
+        if str(item.get("master_pdf_page", "")).isdigit()
+    ]
+
+    expected_pages = max(master_pages, default=0)
+
+    return {
+        "version": f"sha256:{digest[:12]}",
+        "sha256": digest,
+        "expected_pages": expected_pages,
+        "fingerprint_count": len(index),
+    }
+
+
+def assess_master_compatibility(
+    summary: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    pages = int(summary.get("pages", 0) or 0)
+    mapped = int(summary.get("pages_mapped", 0) or 0)
+    expected_pages = int(
+        metadata.get("expected_pages", 0) or 0
+    )
+
+    coverage = (
+        mapped / pages
+        if pages
+        else 0.0
+    )
+
+    pages_beyond_master = max(
+        0,
+        pages - expected_pages,
+    )
+
+    unresolved_count = len(
+        summary.get("pages_unresolved", [])
+    )
+
+    # A PDF may legitimately be longer than the master.
+    # More pages alone do NOT mean the master changed.
+    #
+    # We flag a likely compatibility problem only when
+    # a substantial proportion of the PDF cannot be
+    # matched to the current master.
+    mismatch_suspected = (
+        pages > 0
+        and coverage < 0.80
+    )
+
+    return {
+        "master_index_version": metadata.get(
+            "version",
+            "",
+        ),
+        "master_index_sha256": metadata.get(
+            "sha256",
+            "",
+        ),
+        "master_expected_pages": expected_pages,
+        "master_fingerprint_count": metadata.get(
+            "fingerprint_count",
+            0,
+        ),
+        "mapping_coverage": round(
+            coverage,
+            4,
+        ),
+        "pages_beyond_master": pages_beyond_master,
+        "unresolved_page_count": unresolved_count,
+        "master_mismatch_suspected": mismatch_suspected,
+    }
 
 ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 

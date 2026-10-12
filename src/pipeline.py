@@ -11,96 +11,554 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from alerts import classify_pdf_result
+from notifier import notify_alert
 from drive_adapter import DriveAdapter
-from extractor import extract_pdf, load_config, load_master_index
-from registry import build_registry, precheck
-from sheets_adapter import FILES_HEADERS, SheetsAdapter
+from extractor import (
+    assess_master_compatibility,
+    extract_pdf,
+    load_config,
+    load_master_index,
+    master_index_metadata,
+)
+from registry import (
+    RegistryEntry,
+    build_registry,
+    hash_precheck,
+    precheck,
+)
+from sheets_adapter import (
+    DATABASE_HEADERS,
+    FILES_HEADERS,
+    NEEDS_REVIEW_HEADERS,
+    SheetsAdapter,
+)
 from sync_engine import files_registry_row, sync_annotations
+
 
 load_dotenv()
 
 
 def bool_env(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
+
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    return raw.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
-def process_drive_folder(folder_id: str, spreadsheet_id: str, master_index_path: Path, config_path: Path, dry_run: bool = False) -> dict[str, Any]:
+def env_first(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+
+        if value:
+            return value
+
+    return default
+
+
+def process_drive_folder(
+    folder_id: str,
+    spreadsheet_id: str,
+    master_index_path: Path,
+    config_path: Path,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+
     drive = DriveAdapter()
+
     config = load_config(config_path)
     master_index = load_master_index(master_index_path)
-    sheets = None if dry_run else SheetsAdapter(spreadsheet_id)
 
-    by_id, by_md5 = {}, {}
+    master_meta = master_index_metadata(
+        master_index_path,
+        master_index,
+    )
+
+    print(
+        "Master index loaded: "
+        f"version={master_meta['version']} "
+        f"| expected_pages={master_meta['expected_pages']} "
+        f"| fingerprints={master_meta['fingerprint_count']}"
+    )
+
+    sheets = (
+        None
+        if dry_run
+        else SheetsAdapter(spreadsheet_id)
+    )
+
+    by_id: dict[str, Any] = {}
+    by_sha256: dict[str, Any] = {}
+
     if sheets:
-        sheets.ensure_headers("_Files", FILES_HEADERS)
-        by_id, by_md5 = build_registry(sheets.get_all_values("_Files"))
+        print("Preflight: validating Google Sheets state...")
 
-    results = []
-    with tempfile.TemporaryDirectory(prefix="workflow2_") as tmp:
+        sheets.ensure_headers(
+            "_Files",
+            FILES_HEADERS,
+        )
+
+        sheets.ensure_headers(
+            "_Database",
+            DATABASE_HEADERS,
+        )
+
+        sheets.ensure_headers(
+            "_Needs Review",
+            NEEDS_REVIEW_HEADERS,
+        )
+
+        # Important:
+        # Read once here before processing any PDFs.
+        # SheetsAdapter caches this for the entire execution.
+        database_values = sheets.get_all_values(
+            "_Database"
+        )
+
+        print(
+            "Preflight: _Database loaded "
+            f"({max(len(database_values) - 1, 0)} records)."
+        )
+
+        file_registry_values = sheets.get_all_values(
+            "_Files"
+        )
+
+        by_id, by_sha256 = build_registry(
+            file_registry_values
+        )
+
+    results: list[dict[str, Any]] = []
+
+    pdf_files = drive.list_pdfs(folder_id)
+
+    print(
+        f"Drive scan complete: {len(pdf_files)} PDF(s) found."
+    )
+
+    with tempfile.TemporaryDirectory(
+        prefix="workflow2_"
+    ) as tmp:
+
         tmpdir = Path(tmp)
-        for f in drive.list_pdfs(folder_id):
+
+        for f in pdf_files:
+
             if sheets:
-                action, reason = precheck(f, by_id, by_md5)
+                action, reason = precheck(
+                    f,
+                    by_id,
+                )
+
                 if action != "PROCESS":
-                    results.append({"file_id": f.file_id, "name": f.name, "action": action, "reason": reason})
+                    print(
+                        f"Skipping unchanged PDF: {f.name}"
+                    )
+
+                    results.append(
+                        {
+                            "file_id": f.file_id,
+                            "name": f.name,
+                            "action": action,
+                            "reason": reason,
+                        }
+                    )
+
                     continue
 
             run_id = str(uuid.uuid4())
-            local_pdf = tmpdir / f"{f.file_id}_{f.name}"
+
+            local_pdf = (
+                tmpdir
+                / f"{f.file_id}_{f.name}"
+            )
+
+            print(f"Processing PDF: {f.name}")
+
             try:
-                drive.download(f.file_id, local_pdf)
-                annotations, summary = extract_pdf(local_pdf, config, master_index=master_index)
-                for a in annotations:
-                    a["source_file"] = f.name
+                drive.download(
+                    f.file_id,
+                    local_pdf,
+                )
+
+                annotations, summary = extract_pdf(
+                    local_pdf,
+                    config,
+                    master_index=master_index,
+                )
+
+                master_assessment = assess_master_compatibility(
+                    summary,
+                    master_meta,
+                )
+
+                summary.update(master_assessment)
+
+                hash_action, hash_reason = hash_precheck(
+                    summary.get("sha256", ""),
+                    f.file_id,
+                    by_sha256,
+                )
+
+                if hash_action != "PROCESS":
+
+                    print(
+                        f"Skipping duplicate PDF: {f.name} "
+                        f"| {hash_reason}"
+                    )
+
+                    if sheets:
+                        meta = f.__dict__.copy()
+
+                        sheets.append_rows(
+                            "_Files",
+                            [
+                                files_registry_row(
+                                    meta,
+                                    summary,
+                                    {},
+                                    "DUPLICATE",
+                                    hash_reason,
+                                )
+                            ],
+                        )
+
+                    duplicate_entry = RegistryEntry(
+                        file_id=f.file_id,
+                        name=f.name,
+                        modified_time=f.modified_time,
+                        size=f.size,
+                        sha256=summary.get("sha256", ""),
+                        status="DUPLICATE",
+                    )
+
+                    by_id[f.file_id] = duplicate_entry
+
+                    results.append(
+                        {
+                            "file_id": f.file_id,
+                            "name": f.name,
+                            "action": hash_action,
+                            "reason": hash_reason,
+                        }
+                    )
+
+                    continue
+
+                print(
+                    "Mapping assessment: "
+                    f"{summary.get('pages_mapped', 0)}/"
+                    f"{summary.get('pages', 0)} "
+                    f"| coverage="
+                    f"{summary.get('mapping_coverage', 0):.1%} "
+                    f"| beyond_master="
+                    f"{summary.get('pages_beyond_master', 0)} "
+                    f"| mismatch_suspected="
+                    f"{summary.get('master_mismatch_suspected', False)}"
+                )
+
+                for annotation in annotations:
+                    annotation["source_file"] = f.name
+
                 summary["source_file"] = f.name
 
                 if dry_run:
                     sync_stats = {
-                        "inserted": sum(1 for a in annotations if a.get("import_candidate")),
+                        "inserted": sum(
+                            1
+                            for annotation in annotations
+                            if annotation.get(
+                                "import_candidate"
+                            )
+                        ),
                         "updated": 0,
                         "unchanged": 0,
-                        "skipped": sum(1 for a in annotations if not a.get("import_candidate")),
+                        "skipped": sum(
+                            1
+                            for annotation in annotations
+                            if not annotation.get(
+                                "import_candidate"
+                            )
+                        ),
                     }
+
                 else:
-                    sync_stats = sync_annotations(sheets, annotations, f.file_id, f.web_view_link, run_id)
-                    meta = f.__dict__.copy()
-                    sheets.append_rows("_Files", [files_registry_row(meta, summary, sync_stats, "PROCESSED")])
+                    assert sheets is not None
 
-                results.append({
-                    "file_id": f.file_id,
-                    "name": f.name,
-                    "action": "PROCESSED",
-                    "summary": summary,
-                    "sync": sync_stats,
-                })
+                    sync_stats = sync_annotations(
+                        sheets,
+                        annotations,
+                        f.file_id,
+                        f.web_view_link,
+                        run_id,
+                    )
+
+                    meta = f.__dict__.copy()
+
+                    sheets.append_rows(
+                        "_Files",
+                        [
+                            files_registry_row(
+                                meta,
+                                summary,
+                                sync_stats,
+                                "PROCESSED",
+                            )
+                        ],
+                    )
+
+                processed_entry = RegistryEntry(
+                    file_id=f.file_id,
+                    name=f.name,
+                    modified_time=f.modified_time,
+                    size=f.size,
+                    sha256=summary.get("sha256", ""),
+                    status="PROCESSED",
+                )
+
+                by_id[f.file_id] = processed_entry
+
+                if processed_entry.sha256:
+                    by_sha256[processed_entry.sha256] = processed_entry
+
+                print(
+                    f"Processed successfully: {f.name} "
+                    f"| annotations={summary.get('annotations_found', 0)} "
+                    f"| new={sync_stats.get('inserted', 0)} "
+                    f"| updated={sync_stats.get('updated', 0)} "
+                    f"| unchanged={sync_stats.get('unchanged', 0)}"
+                )
+
+                alerts = classify_pdf_result(
+                    f.name,
+                    summary,
+                    sync_stats,
+                    status="PROCESSED",
+                )
+
+                for alert in alerts:
+                    print(
+                        "ALERT "
+                        f"[{alert['severity']}] "
+                        f"[{','.join(alert['audience'])}] "
+                        f"{alert['code']}: "
+                        f"{alert['message']}"
+                    )
+
+                    try:
+                        notification_result = notify_alert(alert)
+
+                        print(
+                            "NOTIFICATION "
+                            f"{alert['code']}: "
+                            f"{notification_result}"
+                        )
+
+                    except Exception as notification_exc:
+                        print(
+                            "WARNING: notification failed "
+                            f"for {alert['code']}: "
+                            f"{type(notification_exc).__name__}: "
+                            f"{notification_exc}"
+                        )
+
+                results.append(
+                    {
+                        "file_id": f.file_id,
+                        "name": f.name,
+                        "action": "PROCESSED",
+                        "summary": summary,
+                        "sync": sync_stats,
+                        "alerts": alerts,
+                    }
+                )
+
             except Exception as exc:
-                if sheets:
-                    meta = f.__dict__.copy()
-                    empty_summary = {"sha256": "", "reviewers": [], "pages": 0, "pages_mapped": 0, "annotations_found": 0, "skipped_by_reason": {}, "pages_unresolved": [], "footer_mismatches": []}
-                    sheets.append_rows("_Files", [files_registry_row(meta, empty_summary, {}, "ERROR", str(exc))])
-                results.append({"file_id": f.file_id, "name": f.name, "action": "ERROR", "error": str(exc)})
+                print(
+                    f"ERROR processing {f.name}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
-    return {"files_seen": len(results), "results": results, "dry_run": dry_run}
+                if sheets:
+                    try:
+                        meta = f.__dict__.copy()
+
+                        empty_summary = {
+                            "sha256": "",
+                            "reviewers": [],
+                            "pages": 0,
+                            "pages_mapped": 0,
+                            "annotations_found": 0,
+                            "skipped_by_reason": {},
+                            "pages_unresolved": [],
+                            "footer_mismatches": [],
+                        }
+
+                        sheets.append_rows(
+                            "_Files",
+                            [
+                                files_registry_row(
+                                    meta,
+                                    empty_summary,
+                                    {},
+                                    "ERROR",
+                                    str(exc),
+                                )
+                            ],
+                        )
+
+                    except Exception as logging_exc:
+                        # Never hide the original PDF-processing error.
+                        print(
+                            "WARNING: could not write the "
+                            "_Files error record: "
+                            f"{type(logging_exc).__name__}: "
+                            f"{logging_exc}"
+                        )
+
+                alerts = classify_pdf_result(
+                    f.name,
+                    {},
+                    {},
+                    status="ERROR",
+                    error=str(exc),
+                )
+
+                for alert in alerts:
+                    print(
+                        "ALERT "
+                        f"[{alert['severity']}] "
+                        f"[{','.join(alert['audience'])}] "
+                        f"{alert['code']}: "
+                        f"{alert['message']}"
+                    )
+
+                    try:
+                        notification_result = notify_alert(alert)
+
+                        print(
+                            "NOTIFICATION "
+                            f"{alert['code']}: "
+                            f"{notification_result}"
+                        )
+
+                    except Exception as notification_exc:
+                        print(
+                            "WARNING: notification failed "
+                            f"for {alert['code']}: "
+                            f"{type(notification_exc).__name__}: "
+                            f"{notification_exc}"
+                        )
+
+                results.append(
+                    {
+                        "file_id": f.file_id,
+                        "name": f.name,
+                        "action": "ERROR",
+                        "error": str(exc),
+                        "alerts": alerts,
+                    }
+                )
+
+    return {
+        "files_seen": len(pdf_files),
+        "results": results,
+        "dry_run": dry_run,
+    }
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Workflow 2 Drive → PDF → Google Sheets pipeline")
-    p.add_argument("--folder-id", default=os.getenv("WORKFLOW2_DRIVE_FOLDER_ID", ""))
-    p.add_argument("--spreadsheet-id", default=os.getenv("WORKFLOW2_SPREADSHEET_ID", ""))
-    p.add_argument("--master-index", type=Path, default=Path(os.getenv("WORKFLOW2_MASTER_INDEX", "master_page_index.json")))
-    p.add_argument("--config", type=Path, default=Path(os.getenv("WORKFLOW2_CONFIG", "config.json")))
-    p.add_argument("--dry-run", action="store_true", default=bool_env("WORKFLOW2_DRY_RUN"))
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Workflow 2 Drive -> PDF -> "
+            "Google Sheets pipeline"
+        )
+    )
+
+    parser.add_argument(
+        "--folder-id",
+        default=env_first(
+            "WORKFLOW2_DRIVE_FOLDER_ID",
+            "GOOGLE_DRIVE_FOLDER_ID",
+        ),
+    )
+
+    parser.add_argument(
+        "--spreadsheet-id",
+        default=env_first(
+            "WORKFLOW2_SPREADSHEET_ID",
+            "GOOGLE_SHEETS_SPREADSHEET_ID",
+        ),
+    )
+
+    parser.add_argument(
+        "--master-index",
+        type=Path,
+        default=Path(
+            env_first(
+                "WORKFLOW2_MASTER_INDEX",
+                default="master_page_index.json",
+            )
+        ),
+    )
+
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(
+            env_first(
+                "WORKFLOW2_CONFIG",
+                default="config.json",
+            )
+        ),
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=bool_env(
+            "WORKFLOW2_DRY_RUN"
+        ),
+    )
+
+    args = parser.parse_args()
 
     if not args.folder_id:
-        p.error("Drive folder ID is required")
-    if not args.dry_run and not args.spreadsheet_id:
-        p.error("Spreadsheet ID is required unless --dry-run is used")
-    result = process_drive_folder(args.folder_id, args.spreadsheet_id, args.master_index, args.config, args.dry_run)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+        parser.error(
+            "Drive folder ID is required"
+        )
+
+    if (
+        not args.dry_run
+        and not args.spreadsheet_id
+    ):
+        parser.error(
+            "Spreadsheet ID is required "
+            "unless --dry-run is used"
+        )
+
+    result = process_drive_folder(
+        args.folder_id,
+        args.spreadsheet_id,
+        args.master_index,
+        args.config,
+        args.dry_run,
+    )
+
+    print(
+        json.dumps(
+            result,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

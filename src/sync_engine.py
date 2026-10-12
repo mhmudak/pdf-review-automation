@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sheets_adapter import (
     DATABASE_HEADERS,
@@ -12,8 +15,29 @@ from sheets_adapter import (
 )
 
 
-def _now() -> str:
+def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _client_timezone() -> ZoneInfo:
+    timezone_name = os.getenv(
+        "CLIENT_TIMEZONE",
+        "Asia/Beirut",
+    )
+
+    try:
+        return ZoneInfo(timezone_name)
+
+    except Exception:
+        # Safe fallback: never crash the workflow because
+        # of a bad timezone configuration.
+        return ZoneInfo("UTC")
+
+
+def _now_client() -> str:
+    return datetime.now(
+        _client_timezone()
+    ).isoformat()
 
 
 def _coordinates(a: dict[str, Any]) -> str:
@@ -105,7 +129,7 @@ def needs_review_row(
     reason = "; ".join(issues) or "REVIEW_REQUIRED"
 
     return [
-        _now(),
+        _now_client(),
         drive_file_id,
         a["source_file"],
         reason,
@@ -157,7 +181,7 @@ def sync_annotations(
         "needs_review": 0,
     }
 
-    now = _now()
+    now = _now_utc()
 
     new_db_rows: list[list[Any]] = []
     db_updates: list[tuple[int, list[Any]]] = []
@@ -389,6 +413,21 @@ def files_registry_row(
             f"{len(summary['footer_mismatches'])} footer mismatches"
         )
 
+    if summary.get("pages_beyond_master"):
+        message_parts.append(
+            f"{summary['pages_beyond_master']} pages beyond master"
+        )
+
+    if summary.get("master_mismatch_suspected"):
+        message_parts.append(
+            "possible master-index mismatch"
+        )
+
+    if summary.get("master_index_version"):
+        message_parts.append(
+            f"master={summary['master_index_version']}"
+        )
+
     if error:
         message_parts.append(error)
 
@@ -407,6 +446,6 @@ def files_registry_row(
         sync_stats.get("updated", 0),
         sync_stats.get("unchanged", 0),
         skipped,
-        _now(),
+        _now_client(),
         "; ".join(message_parts),
     ]

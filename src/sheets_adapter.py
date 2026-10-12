@@ -8,6 +8,7 @@ from googleapiclient.errors import HttpError
 
 from google_auth import get_credentials
 
+
 DATABASE_HEADERS = [
     "Annotation Key", "Reviewer", "Raw Author", "PDF Name", "Drive File ID",
     "Drive Link", "PDF SHA256", "PDF Page", "Book Page", "Page Mapping Method",
@@ -45,31 +46,62 @@ class SheetsAdapter:
             cache_discovery=False,
         )
 
+        # Per-execution caches only.
+        # Nothing is persisted between Cloud Run executions.
+        self._metadata_cache: dict[str, Any] | None = None
+        self._values_cache: dict[str, list[list[Any]]] = {}
+
     def _execute(self, request: Any, max_retries: int = 6) -> Any:
         for attempt in range(max_retries + 1):
             try:
                 return request.execute()
+
             except HttpError as exc:
                 status = getattr(exc.resp, "status", None)
 
-                if status not in {429, 500, 502, 503, 504} or attempt >= max_retries:
+                if (
+                    status not in {429, 500, 502, 503, 504}
+                    or attempt >= max_retries
+                ):
                     raise
 
-                time.sleep(min(2 ** attempt, 32))
+                delay = min(2 ** attempt, 32)
+                time.sleep(delay)
 
-        raise RuntimeError("Unreachable retry state")
+        raise RuntimeError("Retry loop exited unexpectedly")
 
-    def metadata(self) -> dict[str, Any]:
-        return self._execute(
+    def _end_column(self, sheet: str) -> str:
+        if sheet == "_Database":
+            return "Z"
+
+        if sheet == "_Files":
+            return "P"
+
+        if sheet == "_Needs Review":
+            return "L"
+
+        if sheet == "_Config":
+            return "D"
+
+        # Reviewer-facing tabs use 11 columns.
+        return "K"
+
+    def metadata(self, refresh: bool = False) -> dict[str, Any]:
+        if self._metadata_cache is not None and not refresh:
+            return self._metadata_cache
+
+        self._metadata_cache = self._execute(
             self.service.spreadsheets().get(
                 spreadsheetId=self.spreadsheet_id
             )
         )
 
+        return self._metadata_cache
+
     def sheet_titles(self) -> set[str]:
         return {
-            s["properties"]["title"]
-            for s in self.metadata().get("sheets", [])
+            sheet["properties"]["title"]
+            for sheet in self.metadata().get("sheets", [])
         }
 
     def ensure_sheet(self, title: str, hidden: bool = False) -> None:
@@ -94,6 +126,9 @@ class SheetsAdapter:
             )
         )
 
+        # Spreadsheet structure changed.
+        self._metadata_cache = None
+
     def ensure_headers(self, sheet: str, headers: list[str]) -> None:
         self.ensure_sheet(
             sheet,
@@ -103,7 +138,7 @@ class SheetsAdapter:
         current = self._execute(
             self.service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range=f"'{sheet}'!1:1",
+                range=f"'{sheet}'!A1:{self._end_column(sheet)}1",
             )
         ).get("values", [[]])
 
@@ -121,15 +156,37 @@ class SheetsAdapter:
             )
         )
 
-    def get_all_values(self, sheet: str) -> list[list[Any]]:
-        return self._execute(
+        # Header changed: invalidate any cached content.
+        self._values_cache.pop(sheet, None)
+
+    def get_all_values(
+        self,
+        sheet: str,
+        refresh: bool = False,
+    ) -> list[list[Any]]:
+
+        if sheet in self._values_cache and not refresh:
+            return self._values_cache[sheet]
+
+        end_column = self._end_column(sheet)
+
+        values = self._execute(
             self.service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range=f"'{sheet}'!A:ZZ",
+                range=f"'{sheet}'!A:{end_column}",
             )
         ).get("values", [])
 
-    def append_rows(self, sheet: str, rows: list[list[Any]]) -> None:
+        self._values_cache[sheet] = values
+
+        return values
+
+    def append_rows(
+        self,
+        sheet: str,
+        rows: list[list[Any]],
+    ) -> None:
+
         if not rows:
             return
 
@@ -143,12 +200,19 @@ class SheetsAdapter:
             )
         )
 
+        # Keep the local cache synchronized with successful writes.
+        if sheet in self._values_cache:
+            self._values_cache[sheet].extend(
+                [list(row) for row in rows]
+            )
+
     def update_row(
         self,
         sheet: str,
         row_number: int,
         row: list[Any],
     ) -> None:
+
         self._execute(
             self.service.spreadsheets().values().update(
                 spreadsheetId=self.spreadsheet_id,
@@ -158,11 +222,20 @@ class SheetsAdapter:
             )
         )
 
+        if sheet in self._values_cache:
+            cache = self._values_cache[sheet]
+
+            while len(cache) < row_number:
+                cache.append([])
+
+            cache[row_number - 1] = list(row)
+
     def batch_update_rows(
         self,
         sheet: str,
         updates: list[tuple[int, list[Any]]],
     ) -> None:
+
         if not updates:
             return
 
@@ -184,17 +257,30 @@ class SheetsAdapter:
             )
         )
 
+        if sheet in self._values_cache:
+            cache = self._values_cache[sheet]
+
+            for row_number, row in updates:
+                while len(cache) < row_number:
+                    cache.append([])
+
+                cache[row_number - 1] = list(row)
+
     def key_to_row(
         self,
         sheet: str,
         key_col: int = 0,
     ) -> dict[str, int]:
+
         values = self.get_all_values(sheet)
 
-        out: dict[str, int] = {}
+        output: dict[str, int] = {}
 
         for i, row in enumerate(values[1:], start=2):
-            if len(row) > key_col and str(row[key_col]).strip():
-                out[str(row[key_col]).strip()] = i
+            if (
+                len(row) > key_col
+                and str(row[key_col]).strip()
+            ):
+                output[str(row[key_col]).strip()] = i
 
-        return out
+        return output
