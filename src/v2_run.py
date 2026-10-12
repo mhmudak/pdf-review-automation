@@ -94,8 +94,43 @@ def prepare_v2_run(
         entry["drive_link"] = drive_link
         entry["pdf_sha256"] = sha256
 
-    author_summary = v2_author_summary(
-        entries
+    author_summary = dict(
+        v2_author_summary(
+            entries
+        )
+    )
+
+    # Stable outward contract for pipeline/reporting.
+    # Keep whatever richer fields v2_author_summary()
+    # already provides, while guaranteeing counts.
+    author_summary.setdefault(
+        "resolved_count",
+        sum(
+            1
+            for entry in entries
+            if str(
+                entry.get(
+                    "author_status",
+                    "",
+                )
+            ).strip().upper()
+            == "RESOLVED"
+        ),
+    )
+
+    author_summary.setdefault(
+        "unresolved_count",
+        sum(
+            1
+            for entry in entries
+            if str(
+                entry.get(
+                    "author_status",
+                    "",
+                )
+            ).strip().upper()
+            != "RESOLVED"
+        ),
     )
 
     change_plan = plan_v2_changes(
