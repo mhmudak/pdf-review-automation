@@ -38,8 +38,11 @@ from sync_engine import (
     reconcile_output_from_database,
     sync_annotations,
 )
+from backend_router import (
+    registry_entry_for_processed_pdf,
+    synchronize_processed_pdf,
+)
 from v2_backend import ensure_v2_backend
-from v2_execution import execute_v2_pdf
 
 
 load_dotenv()
@@ -452,23 +455,20 @@ def process_drive_folder(
                         is not None
                     )
 
-                    if v2_enabled:
-                        v2_result = execute_v2_pdf(
-                            sheets=backend_sheets,
+                    route_result = (
+                        synchronize_processed_pdf(
+                            v2_enabled=v2_enabled,
+                            backend_sheets=(
+                                backend_sheets
+                            ),
+                            output_sheets=(
+                                output_sheets
+                            ),
                             config=config,
-                            extracted_rows=annotations,
+                            annotations=annotations,
                             summary=summary,
-                            drive_file_id=(
-                                f.file_id
-                            ),
-                            pdf_name=f.name,
-                            drive_link=(
-                                f.web_view_link
-                            ),
-                            modified_time=(
-                                f.modified_time
-                            ),
-                            size_bytes=f.size,
+                            drive_file=f,
+                            run_id=run_id,
                             master_version=str(
                                 master_meta.get(
                                     "version",
@@ -476,201 +476,75 @@ def process_drive_folder(
                                 )
                             ),
                         )
+                    )
 
-                        author_summary = (
-                            v2_result.get(
-                                "author_summary",
-                                {},
+                    sync_stats = (
+                        route_result[
+                            "sync_stats"
+                        ]
+                    )
+
+                    if route_result[
+                        "duplicate"
+                    ]:
+                        duplicate_entry = (
+                            registry_entry_for_processed_pdf(
+                                f,
+                                summary,
+                                duplicate=True,
                             )
                         )
 
-                        entry_changes = (
-                            v2_result.get(
-                                "entry_changes",
-                                {},
-                            )
-                        )
+                        by_id[
+                            f.file_id
+                        ] = duplicate_entry
 
-                        entry_writes = (
-                            v2_result.get(
-                                "entry_writes",
-                                {},
-                            )
-                        )
-
-                        sync_stats = {
-                            "inserted":
-                                entry_writes.get(
-                                    "inserted",
-                                    0,
-                                ),
-                            "updated":
-                                entry_writes.get(
-                                    "updated",
-                                    0,
-                                ),
-                            "unchanged":
-                                entry_changes.get(
-                                    "UNCHANGED",
-                                    0,
-                                ),
-                            "skipped": 0,
-                            "needs_review":
-                                author_summary.get(
-                                    "unresolved_count",
-                                    0,
-                                ),
-                            "output_inserted": 0,
-                            "output_updated": 0,
-                            "output_unchanged": 0,
-                            "author_updated":
-                                entry_changes.get(
-                                    "AUTHOR_UPDATED",
-                                    0,
-                                ),
-                            "removed":
-                                entry_changes.get(
-                                    "REMOVED",
-                                    0,
-                                ),
-                        }
-
-                        is_duplicate_version = (
-                            v2_result.get(
-                                "action"
-                            )
-                            == "DUPLICATE_VERSION"
-                        )
-
-                        registry_status = (
-                            "DUPLICATE"
-                            if is_duplicate_version
-                            else "PROCESSED"
-                        )
-
-                        registry_message = (
-                            "Known v2 document version"
-                            if is_duplicate_version
-                            else ""
-                        )
-
-                        meta = (
-                            f.__dict__.copy()
-                        )
-
-                        backend_sheets.append_rows(
-                            "_Files",
-                            [
-                                files_registry_row(
-                                    meta,
-                                    summary,
-                                    sync_stats,
-                                    registry_status,
-                                    registry_message,
-                                )
-                            ],
-                        )
-
-                        if is_duplicate_version:
-                            duplicate_entry = (
-                                RegistryEntry(
-                                    file_id=f.file_id,
-                                    name=f.name,
-                                    modified_time=(
-                                        f.modified_time
-                                    ),
-                                    size=f.size,
-                                    sha256=summary.get(
-                                        "sha256",
-                                        "",
-                                    ),
-                                    status="DUPLICATE",
-                                )
-                            )
-
-                            by_id[
-                                f.file_id
+                        if (
+                            duplicate_entry.sha256
+                        ):
+                            by_sha256[
+                                duplicate_entry.sha256
                             ] = duplicate_entry
 
-                            if (
-                                duplicate_entry.sha256
-                            ):
-                                by_sha256[
-                                    duplicate_entry.sha256
-                                ] = duplicate_entry
-
-                            results.append(
-                                {
-                                    "file_id":
-                                        f.file_id,
-                                    "name":
-                                        f.name,
-                                    "action":
-                                        "DUPLICATE_VERSION",
-                                    "reason":
-                                        "Known v2 "
-                                        "document version",
-                                    "v2":
-                                        v2_result,
-                                }
+                        v2_result = (
+                            route_result.get(
+                                "v2_result"
                             )
-
-                            print(
-                                "Skipping known v2 "
-                                f"version: {f.name}"
-                            )
-
-                            continue
-
-                    else:
-                        assert (
-                            output_sheets
-                            is not None
+                            or {}
                         )
 
-                        sync_stats = sync_annotations(
-                            backend_sheets,
-                            output_sheets,
-                            annotations,
-                            f.file_id,
-                            f.web_view_link,
-                            run_id,
-                            reviewer_tab_map=config.get(
-                                "reviewer_output_tabs",
-                                {},
-                            ),
+                        results.append(
+                            {
+                                "file_id":
+                                    f.file_id,
+                                "name":
+                                    f.name,
+                                "action":
+                                    "DUPLICATE_VERSION",
+                                "reason":
+                                    "Known v2 "
+                                    "document version",
+                                "v2":
+                                    v2_result,
+                            }
                         )
 
-                        meta = (
-                            f.__dict__.copy()
+                        print(
+                            "Skipping known v2 "
+                            f"version: {f.name}"
                         )
 
-                        backend_sheets.append_rows(
-                            "_Files",
-                            [
-                                files_registry_row(
-                                    meta,
-                                    summary,
-                                    sync_stats,
-                                    "PROCESSED",
-                                )
-                            ],
-                        )
+                        continue
 
                 # ---------------------------------------------
                 # SAME-RUN REGISTRY UPDATE
                 # ---------------------------------------------
 
-                processed_entry = RegistryEntry(
-                    file_id=f.file_id,
-                    name=f.name,
-                    modified_time=f.modified_time,
-                    size=f.size,
-                    sha256=summary.get(
-                        "sha256",
-                        "",
-                    ),
-                    status="PROCESSED",
+                processed_entry = (
+                    registry_entry_for_processed_pdf(
+                        f,
+                        summary,
+                    )
                 )
 
                 by_id[
