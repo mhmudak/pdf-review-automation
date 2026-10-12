@@ -7,7 +7,14 @@ from historical_authors import (
 )
 
 
-def test_no_map_config_returns_empty():
+def test_no_map_config_returns_empty(
+    monkeypatch,
+):
+    monkeypatch.delenv(
+        "WORKFLOW2_HISTORICAL_AUTHOR_MAP",
+        raising=False,
+    )
+
     assert (
         load_historical_author_map({})
         == {}
