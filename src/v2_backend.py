@@ -155,3 +155,88 @@ def author_rules_from_snapshot(
         )
 
     return rules
+
+
+def config_alias_rules(
+    config: dict,
+):
+    from author_resolution import (
+        AuthorRule,
+        is_generic_raw_author,
+    )
+
+    aliases = config.get(
+        "reviewer_aliases",
+        {},
+    )
+
+    if not isinstance(
+        aliases,
+        dict,
+    ):
+        raise ValueError(
+            "reviewer_aliases must be an object"
+        )
+
+    rules = []
+
+    for raw_author, canonical_author in (
+        aliases.items()
+    ):
+        raw = str(
+            raw_author
+        ).strip()
+
+        canonical = str(
+            canonical_author
+        ).strip()
+
+        if not raw or not canonical:
+            continue
+
+        # Never create a global rule for generic
+        # Acrobat identities such as User/user.
+        if is_generic_raw_author(
+            raw
+        ):
+            continue
+
+        rules.append(
+            AuthorRule(
+                rule_id=(
+                    "CONFIG_ALIAS::"
+                    + raw
+                ),
+                scope="GLOBAL_ALIAS",
+                raw_author=raw,
+                canonical_author=canonical,
+                status="APPROVED",
+            )
+        )
+
+    return rules
+
+
+def effective_author_rules(
+    snapshot: BackendSnapshot,
+    config: dict,
+):
+    """
+    Effective resolution rules:
+
+    1. baseline distinctive aliases from config
+    2. PM-approved backend rules
+
+    resolve_author() already applies scope priority,
+    so ENTRY/THREAD/VERSION/DOCUMENT_RAW rules
+    outrank GLOBAL_ALIAS.
+    """
+
+    return [
+        *config_alias_rules(
+            config
+        ),
+        *author_rules_from_snapshot(
+            snapshot
+        ),
+    ]

@@ -178,3 +178,92 @@ def test_author_rules_from_snapshot():
         == "Faten Khalifeh"
     )
     assert rules[0].raw_author == "User"
+
+
+def test_config_alias_rules_skip_generic_authors():
+    from v2_backend import config_alias_rules
+
+    rules = config_alias_rules(
+        {
+            "reviewer_aliases": {
+                "Luma Hameed":
+                    "Luma Hameed",
+                "emanz":
+                    "Eman Zahran",
+                "S.A.I.D..F.A.R.H.A.T":
+                    "Said Farhat",
+                "User":
+                    "Faten Khalifeh",
+                "user":
+                    "Hala Afifi",
+            }
+        }
+    )
+
+    by_raw = {
+        rule.raw_author:
+            rule.canonical_author
+        for rule in rules
+    }
+
+    assert by_raw == {
+        "Luma Hameed":
+            "Luma Hameed",
+        "emanz":
+            "Eman Zahran",
+        "S.A.I.D..F.A.R.H.A.T":
+            "Said Farhat",
+    }
+
+    assert "User" not in by_raw
+    assert "user" not in by_raw
+
+
+def test_effective_rules_include_config_and_pm_rules():
+    from backend_cache import BackendSnapshot
+    from v2_backend import effective_author_rules
+
+    snapshot = BackendSnapshot(
+        documents=[],
+        files=[],
+        entries=[],
+        author_rules=[
+            {
+                "Rule ID": "PM-FATEN-1",
+                "Scope": "VERSION",
+                "Version ID":
+                    "IGCSE_ARABIC_2P@version",
+                "Raw Author": "User",
+                "Canonical Author":
+                    "Faten Khalifeh",
+                "Status": "APPROVED",
+            }
+        ],
+    )
+
+    rules = effective_author_rules(
+        snapshot,
+        {
+            "reviewer_aliases": {
+                "emanz":
+                    "Eman Zahran",
+            }
+        },
+    )
+
+    assert len(rules) == 2
+
+    assert any(
+        rule.scope == "GLOBAL_ALIAS"
+        and rule.raw_author == "emanz"
+        and rule.canonical_author
+            == "Eman Zahran"
+        for rule in rules
+    )
+
+    assert any(
+        rule.rule_id == "PM-FATEN-1"
+        and rule.scope == "VERSION"
+        and rule.raw_author == "User"
+        for rule in rules
+    )
