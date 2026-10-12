@@ -66,6 +66,7 @@ def env_first(*names: str, default: str = "") -> str:
 def process_drive_folder(
     folder_id: str,
     spreadsheet_id: str,
+    output_spreadsheet_id: str,
     master_index_path: Path,
     config_path: Path,
     dry_run: bool = False,
@@ -88,37 +89,52 @@ def process_drive_folder(
         f"| fingerprints={master_meta['fingerprint_count']}"
     )
 
-    sheets = (
+    # Backend source-of-truth spreadsheet:
+    # _Database / _Files / _Needs Review / _Config
+    backend_sheets = (
         None
         if dry_run
-        else SheetsAdapter(spreadsheet_id)
+        else SheetsAdapter(
+            spreadsheet_id
+        )
+    )
+
+    # Team-facing spreadsheet:
+    # reviewer tabs only
+    output_sheets = (
+        None
+        if dry_run
+        else SheetsAdapter(
+            output_spreadsheet_id
+        )
     )
 
     by_id: dict[str, Any] = {}
     by_sha256: dict[str, Any] = {}
 
-    if sheets:
-        print("Preflight: validating Google Sheets state...")
+    if backend_sheets:
+        print(
+            "Preflight: validating backend Google Sheets state..."
+        )
 
-        sheets.ensure_headers(
+        backend_sheets.ensure_headers(
             "_Files",
             FILES_HEADERS,
         )
 
-        sheets.ensure_headers(
+        backend_sheets.ensure_headers(
             "_Database",
             DATABASE_HEADERS,
         )
 
-        sheets.ensure_headers(
+        backend_sheets.ensure_headers(
             "_Needs Review",
             NEEDS_REVIEW_HEADERS,
         )
 
-        # Important:
-        # Read once here before processing any PDFs.
-        # SheetsAdapter caches this for the entire execution.
-        database_values = sheets.get_all_values(
+        # Read once at startup.
+        # SheetsAdapter keeps this cached for the execution.
+        database_values = backend_sheets.get_all_values(
             "_Database"
         )
 
@@ -127,8 +143,10 @@ def process_drive_folder(
             f"({max(len(database_values) - 1, 0)} records)."
         )
 
-        file_registry_values = sheets.get_all_values(
-            "_Files"
+        file_registry_values = (
+            backend_sheets.get_all_values(
+                "_Files"
+            )
         )
 
         by_id, by_sha256 = build_registry(
@@ -151,7 +169,11 @@ def process_drive_folder(
 
         for f in pdf_files:
 
-            if sheets:
+            # -------------------------------------------------
+            # PRE-DOWNLOAD DRIVE-LEVEL CHECK
+            # -------------------------------------------------
+
+            if backend_sheets:
                 action, reason = precheck(
                     f,
                     by_id,
@@ -180,9 +202,15 @@ def process_drive_folder(
                 / f"{f.file_id}_{f.name}"
             )
 
-            print(f"Processing PDF: {f.name}")
+            print(
+                f"Processing PDF: {f.name}"
+            )
 
             try:
+                # ---------------------------------------------
+                # DOWNLOAD + EXTRACTION
+                # ---------------------------------------------
+
                 drive.download(
                     f.file_id,
                     local_pdf,
@@ -194,17 +222,30 @@ def process_drive_folder(
                     master_index=master_index,
                 )
 
-                master_assessment = assess_master_compatibility(
-                    summary,
-                    master_meta,
+                master_assessment = (
+                    assess_master_compatibility(
+                        summary,
+                        master_meta,
+                    )
                 )
 
-                summary.update(master_assessment)
+                summary.update(
+                    master_assessment
+                )
 
-                hash_action, hash_reason = hash_precheck(
-                    summary.get("sha256", ""),
-                    f.file_id,
-                    by_sha256,
+                # ---------------------------------------------
+                # FILE-LEVEL SHA256 DUPLICATE CHECK
+                # ---------------------------------------------
+
+                hash_action, hash_reason = (
+                    hash_precheck(
+                        summary.get(
+                            "sha256",
+                            "",
+                        ),
+                        f.file_id,
+                        by_sha256,
+                    )
                 )
 
                 if hash_action != "PROCESS":
@@ -214,10 +255,12 @@ def process_drive_folder(
                         f"| {hash_reason}"
                     )
 
-                    if sheets:
-                        meta = f.__dict__.copy()
+                    if backend_sheets:
+                        meta = (
+                            f.__dict__.copy()
+                        )
 
-                        sheets.append_rows(
+                        backend_sheets.append_rows(
                             "_Files",
                             [
                                 files_registry_row(
@@ -230,16 +273,24 @@ def process_drive_folder(
                             ],
                         )
 
+                    # Update the in-memory Drive-ID registry so
+                    # this duplicate is skipped immediately if
+                    # encountered again during the same run.
                     duplicate_entry = RegistryEntry(
                         file_id=f.file_id,
                         name=f.name,
                         modified_time=f.modified_time,
                         size=f.size,
-                        sha256=summary.get("sha256", ""),
+                        sha256=summary.get(
+                            "sha256",
+                            "",
+                        ),
                         status="DUPLICATE",
                     )
 
-                    by_id[f.file_id] = duplicate_entry
+                    by_id[
+                        f.file_id
+                    ] = duplicate_entry
 
                     results.append(
                         {
@@ -265,15 +316,24 @@ def process_drive_folder(
                 )
 
                 for annotation in annotations:
-                    annotation["source_file"] = f.name
+                    annotation[
+                        "source_file"
+                    ] = f.name
 
-                summary["source_file"] = f.name
+                summary[
+                    "source_file"
+                ] = f.name
+
+                # ---------------------------------------------
+                # DRY RUN
+                # ---------------------------------------------
 
                 if dry_run:
                     sync_stats = {
                         "inserted": sum(
                             1
-                            for annotation in annotations
+                            for annotation
+                            in annotations
                             if annotation.get(
                                 "import_candidate"
                             )
@@ -282,27 +342,51 @@ def process_drive_folder(
                         "unchanged": 0,
                         "skipped": sum(
                             1
-                            for annotation in annotations
+                            for annotation
+                            in annotations
                             if not annotation.get(
                                 "import_candidate"
                             )
                         ),
+                        "needs_review": 0,
+                        "output_inserted": 0,
+                        "output_updated": 0,
+                        "output_unchanged": 0,
                     }
 
+                # ---------------------------------------------
+                # BACKEND + OUTPUT SYNCHRONIZATION
+                # ---------------------------------------------
+
                 else:
-                    assert sheets is not None
+                    assert (
+                        backend_sheets
+                        is not None
+                    )
+
+                    assert (
+                        output_sheets
+                        is not None
+                    )
 
                     sync_stats = sync_annotations(
-                        sheets,
+                        backend_sheets,
+                        output_sheets,
                         annotations,
                         f.file_id,
                         f.web_view_link,
                         run_id,
+                        reviewer_tab_map=config.get(
+                            "reviewer_output_tabs",
+                            {},
+                        ),
                     )
 
-                    meta = f.__dict__.copy()
+                    meta = (
+                        f.__dict__.copy()
+                    )
 
-                    sheets.append_rows(
+                    backend_sheets.append_rows(
                         "_Files",
                         [
                             files_registry_row(
@@ -314,27 +398,52 @@ def process_drive_folder(
                         ],
                     )
 
+                # ---------------------------------------------
+                # SAME-RUN REGISTRY UPDATE
+                # ---------------------------------------------
+
                 processed_entry = RegistryEntry(
                     file_id=f.file_id,
                     name=f.name,
                     modified_time=f.modified_time,
                     size=f.size,
-                    sha256=summary.get("sha256", ""),
+                    sha256=summary.get(
+                        "sha256",
+                        "",
+                    ),
                     status="PROCESSED",
                 )
 
-                by_id[f.file_id] = processed_entry
+                by_id[
+                    f.file_id
+                ] = processed_entry
 
                 if processed_entry.sha256:
-                    by_sha256[processed_entry.sha256] = processed_entry
+                    by_sha256[
+                        processed_entry.sha256
+                    ] = processed_entry
 
                 print(
                     f"Processed successfully: {f.name} "
-                    f"| annotations={summary.get('annotations_found', 0)} "
-                    f"| new={sync_stats.get('inserted', 0)} "
-                    f"| updated={sync_stats.get('updated', 0)} "
-                    f"| unchanged={sync_stats.get('unchanged', 0)}"
+                    f"| annotations="
+                    f"{summary.get('annotations_found', 0)} "
+                    f"| db_new="
+                    f"{sync_stats.get('inserted', 0)} "
+                    f"| db_updated="
+                    f"{sync_stats.get('updated', 0)} "
+                    f"| db_unchanged="
+                    f"{sync_stats.get('unchanged', 0)} "
+                    f"| output_new="
+                    f"{sync_stats.get('output_inserted', 0)} "
+                    f"| output_updated="
+                    f"{sync_stats.get('output_updated', 0)} "
+                    f"| output_unchanged="
+                    f"{sync_stats.get('output_unchanged', 0)}"
                 )
+
+                # ---------------------------------------------
+                # ALERT CLASSIFICATION + NOTIFICATIONS
+                # ---------------------------------------------
 
                 alerts = classify_pdf_result(
                     f.name,
@@ -353,7 +462,11 @@ def process_drive_folder(
                     )
 
                     try:
-                        notification_result = notify_alert(alert)
+                        notification_result = (
+                            notify_alert(
+                                alert
+                            )
+                        )
 
                         print(
                             "NOTIFICATION "
@@ -362,6 +475,8 @@ def process_drive_folder(
                         )
 
                     except Exception as notification_exc:
+                        # Notification failure must never make
+                        # successful PDF processing fail.
                         print(
                             "WARNING: notification failed "
                             f"for {alert['code']}: "
@@ -380,15 +495,22 @@ def process_drive_folder(
                     }
                 )
 
+            # -------------------------------------------------
+            # PDF PROCESSING ERROR
+            # -------------------------------------------------
+
             except Exception as exc:
                 print(
                     f"ERROR processing {f.name}: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
                 )
 
-                if sheets:
+                if backend_sheets:
                     try:
-                        meta = f.__dict__.copy()
+                        meta = (
+                            f.__dict__.copy()
+                        )
 
                         empty_summary = {
                             "sha256": "",
@@ -401,7 +523,7 @@ def process_drive_folder(
                             "footer_mismatches": [],
                         }
 
-                        sheets.append_rows(
+                        backend_sheets.append_rows(
                             "_Files",
                             [
                                 files_registry_row(
@@ -415,7 +537,8 @@ def process_drive_folder(
                         )
 
                     except Exception as logging_exc:
-                        # Never hide the original PDF-processing error.
+                        # Never hide the original PDF-processing
+                        # error because error logging also failed.
                         print(
                             "WARNING: could not write the "
                             "_Files error record: "
@@ -441,7 +564,11 @@ def process_drive_folder(
                     )
 
                     try:
-                        notification_result = notify_alert(alert)
+                        notification_result = (
+                            notify_alert(
+                                alert
+                            )
+                        )
 
                         print(
                             "NOTIFICATION "
@@ -468,7 +595,9 @@ def process_drive_folder(
                 )
 
     return {
-        "files_seen": len(pdf_files),
+        "files_seen": len(
+            pdf_files
+        ),
         "results": results,
         "dry_run": dry_run,
     }
@@ -478,7 +607,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Workflow 2 Drive -> PDF -> "
-            "Google Sheets pipeline"
+            "backend + reviewer output pipeline"
         )
     )
 
@@ -495,6 +624,14 @@ def main() -> None:
         default=env_first(
             "WORKFLOW2_SPREADSHEET_ID",
             "GOOGLE_SHEETS_SPREADSHEET_ID",
+        ),
+    )
+
+    parser.add_argument(
+        "--output-spreadsheet-id",
+        default=env_first(
+            "WORKFLOW2_OUTPUT_SPREADSHEET_ID",
+            "OUTPUT_SPREADSHEET_ID",
         ),
     )
 
@@ -540,13 +677,23 @@ def main() -> None:
         and not args.spreadsheet_id
     ):
         parser.error(
-            "Spreadsheet ID is required "
+            "Backend spreadsheet ID is required "
+            "unless --dry-run is used"
+        )
+
+    if (
+        not args.dry_run
+        and not args.output_spreadsheet_id
+    ):
+        parser.error(
+            "Output spreadsheet ID is required "
             "unless --dry-run is used"
         )
 
     result = process_drive_folder(
         args.folder_id,
         args.spreadsheet_id,
+        args.output_spreadsheet_id,
         args.master_index,
         args.config,
         args.dry_run,

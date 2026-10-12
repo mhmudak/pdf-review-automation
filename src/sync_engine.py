@@ -107,7 +107,8 @@ def visible_row(
         a["modified"],
         "",
         "",
-        a["annotation_id"],
+        a.get("annotation_id")
+        or a.get("identity_key", ""),
     ]
 
 
@@ -153,25 +154,51 @@ def _review_key(row: list[Any]) -> tuple[str, str, str]:
 
 
 def sync_annotations(
-    sheets: SheetsAdapter,
+    backend_sheets: SheetsAdapter,
+    output_sheets: SheetsAdapter | None,
     annotations: list[dict[str, Any]],
     drive_file_id: str,
     drive_link: str,
     run_id: str,
+    reviewer_tab_map: dict[str, str] | None = None,
 ) -> dict[str, int]:
 
     del run_id
 
-    sheets.ensure_headers("_Database", DATABASE_HEADERS)
-    sheets.ensure_headers("_Needs Review", NEEDS_REVIEW_HEADERS)
+    reviewer_tab_map = reviewer_tab_map or {}
 
-    db_rows = sheets.get_all_values("_Database")
+    # ---------------------------------------------------------
+    # BACKEND
+    # ---------------------------------------------------------
 
-    existing: dict[str, tuple[int, list[Any]]] = {}
+    backend_sheets.ensure_headers(
+        "_Database",
+        DATABASE_HEADERS,
+    )
 
-    for i, row in enumerate(db_rows[1:], start=2):
+    backend_sheets.ensure_headers(
+        "_Needs Review",
+        NEEDS_REVIEW_HEADERS,
+    )
+
+    db_rows = backend_sheets.get_all_values(
+        "_Database"
+    )
+
+    existing: dict[
+        str,
+        tuple[int, list[Any]],
+    ] = {}
+
+    for i, row in enumerate(
+        db_rows[1:],
+        start=2,
+    ):
         if row:
-            existing[str(row[0])] = (i, row)
+            existing[str(row[0])] = (
+                i,
+                row,
+            )
 
     stats = {
         "inserted": 0,
@@ -179,21 +206,34 @@ def sync_annotations(
         "unchanged": 0,
         "skipped": 0,
         "needs_review": 0,
+        "output_inserted": 0,
+        "output_updated": 0,
+        "output_unchanged": 0,
     }
 
     now = _now_utc()
 
     new_db_rows: list[list[Any]] = []
-    db_updates: list[tuple[int, list[Any]]] = []
+
+    db_updates: list[
+        tuple[int, list[Any]]
+    ] = []
+
     review_rows: list[list[Any]] = []
 
-    current_by_reviewer: dict[str, list[dict[str, Any]]] = {}
+    current_by_reviewer: dict[
+        str,
+        list[dict[str, Any]],
+    ] = {}
 
     seen_keys: set[str] = set()
 
     for a in annotations:
 
-        if not a.get("import_candidate", True):
+        if not a.get(
+            "import_candidate",
+            True,
+        ):
             stats["skipped"] += 1
             continue
 
@@ -214,7 +254,9 @@ def sync_annotations(
             and len(current[1]) > 24
             and current[1][24]
         ):
-            first_seen = str(current[1][24])
+            first_seen = str(
+                current[1][24]
+            )
 
         new_row = database_row(
             a,
@@ -226,17 +268,24 @@ def sync_annotations(
 
         if current is None:
 
-            new_db_rows.append(new_row)
+            new_db_rows.append(
+                new_row
+            )
+
             stats["inserted"] += 1
 
         else:
 
             row_num, old = current
 
-            compare_indexes = list(range(0, 24))
+            compare_indexes = list(
+                range(0, 24)
+            )
 
             normalized_old = [
-                old[i] if i < len(old) else ""
+                old[i]
+                if i < len(old)
+                else ""
                 for i in compare_indexes
             ]
 
@@ -245,10 +294,16 @@ def sync_annotations(
                 for i in compare_indexes
             ]
 
-            if normalized_old != normalized_new:
+            if (
+                normalized_old
+                != normalized_new
+            ):
 
                 db_updates.append(
-                    (row_num, new_row)
+                    (
+                        row_num,
+                        new_row,
+                    )
                 )
 
                 stats["updated"] += 1
@@ -273,7 +328,10 @@ def sync_annotations(
         else:
 
             reviewer = str(
-                a.get("reviewer", "")
+                a.get(
+                    "reviewer",
+                    "",
+                )
             ).strip()
 
             if reviewer:
@@ -283,28 +341,36 @@ def sync_annotations(
                     [],
                 ).append(a)
 
-    # One write for all new database rows.
-    sheets.append_rows(
+    # ---------------------------------------------------------
+    # BACKEND BATCH WRITES
+    # ---------------------------------------------------------
+
+    backend_sheets.append_rows(
         "_Database",
         new_db_rows,
     )
 
-    # One write for all changed existing database rows.
-    sheets.batch_update_rows(
+    backend_sheets.batch_update_rows(
         "_Database",
         db_updates,
     )
 
-    # Avoid duplicate Needs Review records on reruns.
+    # ---------------------------------------------------------
+    # NEEDS REVIEW
+    # ---------------------------------------------------------
+
     if review_rows:
 
-        existing_review = sheets.get_all_values(
-            "_Needs Review"
+        existing_review = (
+            backend_sheets.get_all_values(
+                "_Needs Review"
+            )
         )
 
         existing_review_keys = {
             _review_key(row)
-            for row in existing_review[1:]
+            for row
+            in existing_review[1:]
             if row
         }
 
@@ -315,61 +381,177 @@ def sync_annotations(
             not in existing_review_keys
         ]
 
-        sheets.append_rows(
+        backend_sheets.append_rows(
             "_Needs Review",
             unique_review_rows,
         )
 
-    # Reconcile reviewer tabs independently from DB insertion.
-    # This repairs partial previous runs.
-    for reviewer, reviewer_annotations in current_by_reviewer.items():
+    # ---------------------------------------------------------
+    # USER-FACING OUTPUT PROJECTION
+    # ---------------------------------------------------------
 
-        sheets.ensure_headers(
-            reviewer,
+    if output_sheets is None:
+        return stats
+
+    for (
+        reviewer,
+        reviewer_annotations,
+    ) in current_by_reviewer.items():
+
+        tab_name = str(
+            reviewer_tab_map.get(
+                reviewer,
+                reviewer,
+            )
+        ).strip()
+
+        if not tab_name:
+            continue
+
+        output_sheets.ensure_headers(
+            tab_name,
             VISIBLE_HEADERS,
         )
 
-        visible_values = sheets.get_all_values(
-            reviewer
+        visible_values = (
+            output_sheets.get_all_values(
+                tab_name
+            )
         )
 
-        existing_annotation_ids = {
-            str(row[10]).strip()
-            for row in visible_values[1:]
-            if len(row) > 10
-            and str(row[10]).strip()
-        }
+        existing_visible: dict[
+            str,
+            tuple[int, list[Any]],
+        ] = {}
 
-        missing_visible_rows: list[list[Any]] = []
+        for row_num, row in enumerate(
+            visible_values[1:],
+            start=2,
+        ):
+
+            if len(row) <= 10:
+                continue
+
+            comment_id = str(
+                row[10]
+            ).strip()
+
+            if comment_id:
+                existing_visible[
+                    comment_id
+                ] = (
+                    row_num,
+                    row,
+                )
+
+        new_visible_rows: list[
+            list[Any]
+        ] = []
+
+        visible_updates: list[
+            tuple[int, list[Any]]
+        ] = []
+
+        pending_ids: set[str] = set()
 
         for a in reviewer_annotations:
 
-            annotation_id = str(
-                a.get("annotation_id", "")
+            new_visible = visible_row(
+                a,
+                drive_link,
+            )
+
+            comment_id = str(
+                new_visible[10]
             ).strip()
 
-            if (
-                annotation_id
-                and annotation_id
-                in existing_annotation_ids
-            ):
+            if not comment_id:
                 continue
 
-            missing_visible_rows.append(
-                visible_row(
-                    a,
-                    drive_link,
+            # Avoid duplicate rows inside one execution.
+            if comment_id in pending_ids:
+                continue
+
+            current_visible = (
+                existing_visible.get(
+                    comment_id
                 )
             )
 
-            if annotation_id:
-                existing_annotation_ids.add(
-                    annotation_id
+            if current_visible is None:
+
+                new_visible_rows.append(
+                    new_visible
                 )
 
-        sheets.append_rows(
-            reviewer,
-            missing_visible_rows,
+                pending_ids.add(
+                    comment_id
+                )
+
+                stats[
+                    "output_inserted"
+                ] += 1
+
+                continue
+
+            row_num, old_visible = (
+                current_visible
+            )
+
+            # Preserve PM/team-managed fields.
+            #
+            # Column I = Resolved?
+            # Column J = Replies
+            #
+            # Automation must never erase manual work.
+            if len(old_visible) > 8:
+                new_visible[8] = (
+                    old_visible[8]
+                )
+
+            if len(old_visible) > 9:
+                new_visible[9] = (
+                    old_visible[9]
+                )
+
+            normalized_old = [
+                old_visible[i]
+                if i < len(old_visible)
+                else ""
+                for i in range(
+                    len(VISIBLE_HEADERS)
+                )
+            ]
+
+            if normalized_old != new_visible:
+
+                visible_updates.append(
+                    (
+                        row_num,
+                        new_visible,
+                    )
+                )
+
+                stats[
+                    "output_updated"
+                ] += 1
+
+            else:
+
+                stats[
+                    "output_unchanged"
+                ] += 1
+
+        # One append request per reviewer.
+        output_sheets.append_rows(
+            tab_name,
+            new_visible_rows,
+        )
+
+        # One batch update per reviewer.
+        output_sheets.batch_update_rows(
+            tab_name,
+            visible_updates,
         )
 
     return stats
