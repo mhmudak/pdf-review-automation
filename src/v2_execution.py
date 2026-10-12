@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from author_review import (
+    build_author_review_rows,
+    promote_approved_author_reviews,
+    upsert_author_review_rows,
+)
 from document_identity import resolve_document_key
 from sheets_adapter import SheetsAdapter
 from v2_backend import load_v2_snapshot
@@ -99,6 +104,76 @@ def execute_v2_pdf(
         processed_at=processed_at,
     )
 
+    approval_sync = {
+        "approved_found": 0,
+        "inserted": 0,
+        "existing": 0,
+    }
+
+    # If anything is unresolved, check whether the PM
+    # has approved an existing review item since the
+    # previous run.
+    if (
+        prepared.author_summary.get(
+            "unresolved_count",
+            0,
+        )
+        > 0
+    ):
+        approval_sync = (
+            promote_approved_author_reviews(
+                sheets
+            )
+        )
+
+        if approval_sync["inserted"]:
+            # Reload decision-grade state so the newly
+            # promoted rules participate immediately.
+            snapshot = load_v2_snapshot(
+                sheets,
+                refresh=True,
+            )
+
+            prepared = prepare_v2_run(
+                snapshot=snapshot,
+                config=config,
+                extracted_rows=extracted_rows,
+                summary=summary,
+                document_key=document_key,
+                sha256=sha256,
+                drive_file_id=drive_file_id,
+                pdf_name=pdf_name,
+                drive_link=drive_link,
+                modified_time=modified_time,
+                size_bytes=size_bytes,
+                document_name=str(
+                    config.get(
+                        "document_name",
+                        document_key,
+                    )
+                ).strip(),
+                output_tab=str(
+                    config.get(
+                        "document_output_tab",
+                        "",
+                    )
+                ).strip(),
+                master_version=master_version,
+                historical_author_by_entry_id=(
+                    historical_author_by_entry_id
+                ),
+                processed_at=processed_at,
+            )
+
+    review_rows = build_author_review_rows(
+        list(prepared.entries)
+    )
+
+    review_sync = upsert_author_review_rows(
+        sheets,
+        review_rows,
+    )
+
     if known_sha:
         counts = prepared.change_plan.counts()
 
@@ -144,6 +219,9 @@ def execute_v2_pdf(
                     "version_inserted": 0,
                     "version_existing": 1,
                 },
+                "author_review": review_sync,
+                "author_rule_promotion":
+                    approval_sync,
             }
 
     entry_writes = apply_v2_mutations(
@@ -172,4 +250,8 @@ def execute_v2_pdf(
             entry_writes,
         "registry_writes":
             registry_writes,
+        "author_review":
+            review_sync,
+        "author_rule_promotion":
+            approval_sync,
     }

@@ -378,3 +378,135 @@ def approved_rules_from_review_values(
         )
 
     return rules
+
+
+def dict_to_author_rule_row(
+    record: dict[str, Any],
+) -> list[Any]:
+    from sheets_adapter import AUTHOR_RULE_HEADERS
+
+    return [
+        record.get(header, "")
+        for header in AUTHOR_RULE_HEADERS
+    ]
+
+
+def promote_approved_author_reviews(
+    sheets: Any,
+) -> dict[str, int]:
+    """
+    Promote explicit APPROVE decisions from _Author Review
+    into _Author Rules.
+
+    Idempotent by Rule ID.
+    Existing identical rules are left untouched.
+    Conflicting reuse of a Rule ID fails closed.
+    """
+
+    values = sheets.get_all_values(
+        "_Author Review"
+    )
+
+    approved = (
+        approved_rules_from_review_values(
+            values
+        )
+    )
+
+    if not approved:
+        return {
+            "approved_found": 0,
+            "inserted": 0,
+            "existing": 0,
+        }
+
+    existing_by_id = sheets.key_to_row(
+        "_Author Rules",
+        key_col=0,
+    )
+
+    inserts = []
+    existing_count = 0
+
+    for rule in approved:
+        rule_id = _text(
+            rule.get("Rule ID")
+        )
+
+        if not rule_id:
+            raise ValueError(
+                "Approved author rule missing Rule ID."
+            )
+
+        row_number = existing_by_id.get(
+            rule_id
+        )
+
+        if row_number is None:
+            inserts.append(
+                dict_to_author_rule_row(
+                    rule
+                )
+            )
+            continue
+
+        existing = sheets.get_row_values(
+            "_Author Rules",
+            row_number,
+        )
+
+        from sheets_adapter import (
+            AUTHOR_RULE_HEADERS,
+        )
+
+        existing_dict = {
+            header: (
+                existing[index]
+                if index < len(existing)
+                else ""
+            )
+            for index, header in enumerate(
+                AUTHOR_RULE_HEADERS
+            )
+        }
+
+        compare_fields = (
+            "Scope",
+            "Document Key",
+            "Version ID",
+            "Root Entry ID",
+            "Entry ID",
+            "Raw Author",
+            "Canonical Author",
+            "Status",
+        )
+
+        conflict = any(
+            _text(
+                existing_dict.get(field)
+            )
+            != _text(
+                rule.get(field)
+            )
+            for field in compare_fields
+        )
+
+        if conflict:
+            raise ValueError(
+                "Approved author review conflicts "
+                f"with existing Rule ID {rule_id}."
+            )
+
+        existing_count += 1
+
+    if inserts:
+        sheets.append_rows(
+            "_Author Rules",
+            inserts,
+        )
+
+    return {
+        "approved_found": len(approved),
+        "inserted": len(inserts),
+        "existing": existing_count,
+    }

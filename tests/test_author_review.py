@@ -283,3 +283,207 @@ def test_only_explicit_approval_becomes_rule():
         rules[0]["Raw Author"]
         == "user"
     )
+
+
+def test_approved_review_promotes_to_author_rules():
+    from author_review import (
+        promote_approved_author_reviews,
+    )
+    from sheets_adapter import (
+        AUTHOR_RULE_HEADERS,
+    )
+
+    class PromotionSheets:
+        def __init__(self):
+            self.appends = []
+
+        def get_all_values(
+            self,
+            sheet,
+        ):
+            assert sheet == "_Author Review"
+
+            return [
+                AUTHOR_REVIEW_HEADERS,
+                [
+                    "BOOK::BOOK@V1::user",
+                    "BOOK",
+                    "BOOK@V1",
+                    "user",
+                    10,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "APPROVE",
+                    "Hala Afifi",
+                    "VERSION",
+                    "PM",
+                    "2026-10-12T20:00:00Z",
+                    "",
+                ],
+            ]
+
+        def key_to_row(
+            self,
+            sheet,
+            key_col=0,
+        ):
+            assert sheet == "_Author Rules"
+            return {}
+
+        def get_row_values(
+            self,
+            sheet,
+            row_number,
+        ):
+            raise AssertionError(
+                "No existing rule expected."
+            )
+
+        def append_rows(
+            self,
+            sheet,
+            rows,
+        ):
+            self.appends.append(
+                (sheet, rows)
+            )
+
+    sheets = PromotionSheets()
+
+    result = (
+        promote_approved_author_reviews(
+            sheets
+        )
+    )
+
+    assert result == {
+        "approved_found": 1,
+        "inserted": 1,
+        "existing": 0,
+    }
+
+    assert (
+        sheets.appends[0][0]
+        == "_Author Rules"
+    )
+
+    row = sheets.appends[0][1][0]
+
+    rule = dict(
+        zip(
+            AUTHOR_RULE_HEADERS,
+            row,
+        )
+    )
+
+    assert (
+        rule["Canonical Author"]
+        == "Hala Afifi"
+    )
+
+    assert rule["Scope"] == "VERSION"
+
+
+def test_existing_identical_approved_rule_is_idempotent():
+    from author_review import (
+        promote_approved_author_reviews,
+    )
+    from sheets_adapter import (
+        AUTHOR_RULE_HEADERS,
+    )
+
+    review_key = "BOOK::BOOK@V1::user"
+    rule_id = f"PM::{review_key}"
+
+    existing = {
+        "Rule ID": rule_id,
+        "Scope": "VERSION",
+        "Document Key": "BOOK",
+        "Version ID": "BOOK@V1",
+        "Root Entry ID": "",
+        "Entry ID": "",
+        "Raw Author": "user",
+        "Canonical Author": "Hala Afifi",
+        "Status": "APPROVED",
+        "Approved By": "PM",
+        "Approved At":
+            "2026-10-12T20:00:00Z",
+        "Notes": "",
+    }
+
+    existing_row = [
+        existing.get(header, "")
+        for header in AUTHOR_RULE_HEADERS
+    ]
+
+    class PromotionSheets:
+        def __init__(self):
+            self.appends = []
+
+        def get_all_values(
+            self,
+            sheet,
+        ):
+            return [
+                AUTHOR_REVIEW_HEADERS,
+                [
+                    review_key,
+                    "BOOK",
+                    "BOOK@V1",
+                    "user",
+                    10,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "APPROVE",
+                    "Hala Afifi",
+                    "VERSION",
+                    "PM",
+                    "2026-10-12T20:00:00Z",
+                    "",
+                ],
+            ]
+
+        def key_to_row(
+            self,
+            sheet,
+            key_col=0,
+        ):
+            return {
+                rule_id: 2,
+            }
+
+        def get_row_values(
+            self,
+            sheet,
+            row_number,
+        ):
+            return existing_row
+
+        def append_rows(
+            self,
+            sheet,
+            rows,
+        ):
+            self.appends.append(
+                (sheet, rows)
+            )
+
+    sheets = PromotionSheets()
+
+    result = (
+        promote_approved_author_reviews(
+            sheets
+        )
+    )
+
+    assert result == {
+        "approved_found": 1,
+        "inserted": 0,
+        "existing": 1,
+    }
+
+    assert sheets.appends == []

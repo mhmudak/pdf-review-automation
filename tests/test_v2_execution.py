@@ -15,6 +15,7 @@ class FakeSheets:
             "_Versions": [],
             "_Entries_V2": [],
             "_Author Rules": [],
+            "_Author Review": [],
         }
 
         self.batch_get_calls = []
@@ -34,6 +35,15 @@ class FakeSheets:
         )
 
         return self.batch
+
+    def get_all_values(
+        self,
+        sheet,
+    ):
+        return self.batch.get(
+            sheet,
+            [],
+        )
 
     def key_to_row(
         self,
@@ -320,6 +330,7 @@ def test_known_sha_with_same_entry_is_zero_write_duplicate():
             ],
         ],
         "_Author Rules": [],
+        "_Author Review": [],
     }
 
     sheets = FakeSheets(batch=batch)
