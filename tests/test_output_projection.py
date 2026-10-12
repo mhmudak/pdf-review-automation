@@ -4,9 +4,74 @@ from sync_engine import (
     _legacy_annotation_type_e_row,
     _legacy_eman_row,
     _merge_visible_row,
+    _legacy_visible_key,
     visible_row,
 )
 
+def test_legacy_visible_key_normalizes_whitespace():
+    row = [
+        "book.pdf",
+        "link",
+        "52",
+        "  خطأ   لغوي  ",
+        "Linguistic",
+        "Osama",
+        "",
+        "",
+        "No",
+        "",
+        "AAAC123",
+        "",
+    ]
+
+    assert _legacy_visible_key(
+        row
+    ) == (
+        "52",
+        "خطأ لغوي",
+    )
+
+def test_legacy_match_can_replace_old_comment_id():
+    existing = [
+        "",
+        "old-link",
+        "52",
+        "خطأ لغوي",
+        "Linguistic",
+        "Osama",
+        "old-created",
+        "old-modified",
+        "Yes",
+        "Reviewed",
+        "AAAC-old-id",
+        "",
+    ]
+
+    desired = [
+        "book.pdf",
+        "new-link",
+        "52",
+        "خطأ لغوي",
+        "",
+        "Osama Elamrety",
+        "new-created",
+        "new-modified",
+        "",
+        "",
+        "canonical-uuid",
+        "Highlight",
+    ]
+
+    merged = _merge_visible_row(
+        desired,
+        existing,
+    )
+
+    assert merged[4] == "Linguistic"
+    assert merged[8] == "Yes"
+    assert merged[9] == "Reviewed"
+    assert merged[10] == "canonical-uuid"
+    assert merged[11] == "Highlight"
 
 def test_visible_row_falls_back_to_identity_key():
     annotation = {

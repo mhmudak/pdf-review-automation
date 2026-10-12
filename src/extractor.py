@@ -13,7 +13,7 @@ from typing import Any
 
 import fitz
 
-SCHEMA_VERSION = "2.2"
+SCHEMA_VERSION = "2.3"
 
 FIELDS = [
     "schema_version",
@@ -32,6 +32,14 @@ FIELDS = [
     "created",
     "modified",
     "annotation_id",
+    "entry_id",
+    "parent_entry_id",
+    "root_entry_id",
+    "entry_type",
+    "relation_type",
+    "relation_raw",
+    "reply_depth",
+    "parent_xref",
     "identity_key",
     "fallback_fingerprint",
     "xref",
@@ -348,6 +356,59 @@ def annotation_fingerprint(reviewer: str, book_page: str, annotation_type: str, 
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
+def entry_fingerprint(
+    book_page: str,
+    annotation_type: str,
+    comment: str,
+    selected_text: str,
+    subject: str,
+    rect: fitz.Rect,
+) -> str:
+    """
+    Reviewer-independent fallback identity for annotations
+    that do not expose a native /NM annotation ID.
+
+    Native annotation ID remains the preferred identity.
+    """
+    material = "|".join(
+        [
+            str(book_page),
+            annotation_type,
+            normalize_text(comment),
+            normalize_text(selected_text),
+            normalize_text(subject),
+            (
+                f"{round(rect.x0, 1)},"
+                f"{round(rect.y0, 1)},"
+                f"{round(rect.x1, 1)},"
+                f"{round(rect.y1, 1)}"
+            ),
+        ]
+    )
+
+    return hashlib.sha256(
+        material.encode("utf-8")
+    ).hexdigest()
+
+
+def entry_id(
+    annotation_id: str,
+    fallback: str,
+) -> str:
+    """
+    Stable v2 entry identity.
+
+    Native PDF /NM UUID is preferred. The synthetic fallback
+    is used only when /NM is unavailable.
+    """
+    annotation_id = str(
+        annotation_id or ""
+    ).strip()
+
+    if annotation_id:
+        return annotation_id
+
+    return f"fallback:{fallback}"
 
 def identity_key(reviewer: str, book_page: str, annotation_id: str, fallback: str) -> str:
     if annotation_id:
@@ -365,6 +426,231 @@ def should_import(annotation_type: str, comment: str, rules: dict[str, str]) -> 
         return False, f"empty_{annotation_type.lower()}"
     return True, ""
 
+def _xref_value(
+    doc: fitz.Document,
+    xref: int,
+    key: str,
+) -> str:
+    """
+    Read a raw PDF dictionary key safely.
+    """
+    if not xref:
+        return ""
+
+    try:
+        value_type, value = (
+            doc.xref_get_key(
+                int(xref),
+                key,
+            )
+        )
+    except Exception:
+        return ""
+
+    if value_type == "null":
+        return ""
+
+    return str(value or "").strip()
+
+
+def classify_relation(
+    parent_xref: int | str,
+    relation_raw: str,
+) -> str:
+    """
+    Classify native PDF /IRT relationship.
+
+    /IRT without /RT /Group = conversational reply.
+    /IRT with /RT /Group    = grouped editing annotation.
+    No /IRT                 = root annotation.
+    """
+    try:
+        parent = int(parent_xref or 0)
+    except (TypeError, ValueError):
+        parent = 0
+
+    if not parent:
+        return "ROOT"
+
+    normalized_rt = (
+        str(relation_raw or "")
+        .strip()
+        .lstrip("/")
+        .casefold()
+    )
+
+    if normalized_rt == "group":
+        return "GROUP"
+
+    return "REPLY"
+
+def resolve_annotation_hierarchy(
+    rows: list[dict[str, Any]],
+) -> None:
+    """
+    Resolve xref relationships after all annotations have
+    been collected.
+
+    Mutates rows in place.
+    """
+
+    by_xref: dict[int, dict[str, Any]] = {}
+
+    for row in rows:
+        try:
+            xref = int(
+                row.get("xref", 0) or 0
+            )
+        except (TypeError, ValueError):
+            xref = 0
+
+        if xref:
+            by_xref[xref] = row
+
+    # ---------------------------------------------------------
+    # Resolve immediate parent Entry IDs.
+    # ---------------------------------------------------------
+
+    for row in rows:
+        try:
+            parent_xref = int(
+                row.get(
+                    "parent_xref",
+                    0,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            parent_xref = 0
+
+        parent = by_xref.get(
+            parent_xref
+        )
+
+        row["parent_entry_id"] = (
+            str(
+                parent.get(
+                    "entry_id",
+                    "",
+                )
+            )
+            if parent
+            else ""
+        )
+
+    # ---------------------------------------------------------
+    # ROOT and GROUP annotations are not conversational replies.
+    # ---------------------------------------------------------
+
+    for row in rows:
+        relation = str(
+            row.get(
+                "relation_type",
+                "",
+            )
+        )
+
+        if relation != "REPLY":
+            row["entry_type"] = "COMMENT"
+            row["root_entry_id"] = str(
+                row.get(
+                    "entry_id",
+                    "",
+                )
+            )
+            row["reply_depth"] = 0
+
+    # ---------------------------------------------------------
+    # Resolve conversational reply chains.
+    # ---------------------------------------------------------
+
+    def resolve_reply(
+        row: dict[str, Any],
+        visited: set[str] | None = None,
+    ) -> tuple[str, int]:
+
+        visited = set(
+            visited or set()
+        )
+
+        current_entry_id = str(
+            row.get(
+                "entry_id",
+                "",
+            )
+        )
+
+        if current_entry_id in visited:
+            # Defensive cycle protection.
+            return "", 1
+
+        if current_entry_id:
+            visited.add(
+                current_entry_id
+            )
+
+        try:
+            parent_xref = int(
+                row.get(
+                    "parent_xref",
+                    0,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            parent_xref = 0
+
+        parent = by_xref.get(
+            parent_xref
+        )
+
+        if parent is None:
+            return "", 1
+
+        parent_relation = str(
+            parent.get(
+                "relation_type",
+                "",
+            )
+        )
+
+        if parent_relation != "REPLY":
+            return (
+                str(
+                    parent.get(
+                        "entry_id",
+                        "",
+                    )
+                ),
+                1,
+            )
+
+        root_id, parent_depth = (
+            resolve_reply(
+                parent,
+                visited,
+            )
+        )
+
+        return (
+            root_id,
+            parent_depth + 1,
+        )
+
+    for row in rows:
+        if (
+            row.get("relation_type")
+            != "REPLY"
+        ):
+            continue
+
+        root_id, depth = (
+            resolve_reply(row)
+        )
+
+        row["entry_type"] = "REPLY"
+        row["root_entry_id"] = root_id
+        row["reply_depth"] = depth
 
 def extract_pdf(
     pdf_path: Path,
@@ -389,59 +675,193 @@ def extract_pdf(
             unresolved_pages.add(pno)
 
         annot = page.first_annot
+
         while annot:
             info = annot.info or {}
-            raw_author = (info.get("title") or "").strip()
-            reviewer = reviewer_name(raw_author, explicit_reviewer, aliases, generic_values, pdf_path.name)
-            annotation_id = (info.get("id") or "").strip()
-            comment = info.get("content") or ""
-            selected = marked_text(page, annot)
+
+            raw_author = (
+                info.get("title")
+                or ""
+            ).strip()
+
+            reviewer = reviewer_name(
+                raw_author,
+                explicit_reviewer,
+                aliases,
+                generic_values,
+                pdf_path.name,
+            )
+
+            annotation_id = (
+                info.get("id")
+                or ""
+            ).strip()
+
+            comment = (
+                info.get("content")
+                or ""
+            )
+
+            subject = (
+                info.get("subject")
+                or ""
+            ).strip()
+
+            selected = marked_text(
+                page,
+                annot,
+            )
+
             annotation_type = annot.type[1]
             rect = annot.rect
+
+            # Legacy reviewer-dependent identity.
+            # Keep temporarily for backward compatibility.
             fallback = annotation_fingerprint(
-                reviewer, book_page, annotation_type, comment, selected, rect
+                reviewer,
+                book_page,
+                annotation_type,
+                comment,
+                selected,
+                rect,
             )
-            key = identity_key(reviewer, book_page, annotation_id, fallback)
-            keep, skip_reason = should_import(annotation_type, comment, empty_rules)
+
+            key = identity_key(
+                reviewer,
+                book_page,
+                annotation_id,
+                fallback,
+            )
+
+            # V2 reviewer-independent identity.
+            v2_fallback = entry_fingerprint(
+                book_page,
+                annotation_type,
+                comment,
+                selected,
+                subject,
+                rect,
+            )
+
+            current_entry_id = entry_id(
+                annotation_id,
+                v2_fallback,
+            )
+
+            keep, skip_reason = should_import(
+                annotation_type,
+                comment,
+                empty_rules,
+            )
+
+            # Native PDF relationship.
             try:
-                reply_to_xref = annot.irt_xref or ""
+                parent_xref = int(
+                    annot.irt_xref
+                    or 0
+                )
             except Exception:
-                reply_to_xref = ""
+                parent_xref = 0
+
+            relation_raw = _xref_value(
+                doc,
+                annot.xref,
+                "RT",
+            )
+
+            relation_type = classify_relation(
+                parent_xref,
+                relation_raw,
+            )
 
             rows.append(
                 {
                     "schema_version": SCHEMA_VERSION,
                     "source_file": pdf_path.name,
                     "source_sha256": digest,
+
+                    # Legacy normalized reviewer.
                     "reviewer": reviewer,
+
+                    # Exact PDF author value.
                     "raw_author": raw_author,
+
                     "pdf_page": pno,
                     "book_page": book_page,
                     "mapping_method": mapping_method,
                     "mapping_confidence": mapping_confidence,
                     "footer_page_candidate": footer_page_candidate,
                     "footer_status": footer_status,
+
                     "annotation_type": annotation_type,
                     "comment": comment,
                     "selected_text": selected,
-                    "subject": (info.get("subject") or "").strip(),
-                    "created": pdf_date(info.get("creationDate") or ""),
-                    "modified": pdf_date(info.get("modDate") or ""),
+                    "subject": subject,
+
+                    "created": pdf_date(
+                        info.get("creationDate")
+                        or ""
+                    ),
+
+                    "modified": pdf_date(
+                        info.get("modDate")
+                        or ""
+                    ),
+
                     "annotation_id": annotation_id,
+
+                    # ------------------------------
+                    # V2 hierarchy
+                    # ------------------------------
+                    "entry_id": current_entry_id,
+                    "parent_entry_id": "",
+                    "root_entry_id": "",
+
+                    "entry_type": (
+                        "REPLY"
+                        if relation_type == "REPLY"
+                        else "COMMENT"
+                    ),
+
+                    "relation_type": relation_type,
+                    "relation_raw": relation_raw,
+
+                    "reply_depth": (
+                        1
+                        if relation_type == "REPLY"
+                        else 0
+                    ),
+
+                    "parent_xref": parent_xref,
+
+                    # ------------------------------
+                    # Legacy compatibility
+                    # ------------------------------
                     "identity_key": key,
                     "fallback_fingerprint": fallback,
+
                     "xref": annot.xref,
-                    "reply_to_xref": reply_to_xref,
+                    "reply_to_xref": parent_xref,
+
                     "rect_x0": round(rect.x0, 3),
                     "rect_y0": round(rect.y0, 3),
                     "rect_x1": round(rect.x1, 3),
                     "rect_y1": round(rect.y1, 3),
-                    "is_empty": not bool(normalize_text(comment)),
+
+                    "is_empty": not bool(
+                        normalize_text(comment)
+                    ),
+
                     "import_candidate": keep,
                     "skip_reason": skip_reason,
                 }
             )
+
             annot = annot.next
+
+    resolve_annotation_hierarchy(
+        rows
+    )
 
     page_count = doc.page_count
     doc.close()
@@ -461,6 +881,70 @@ def extract_pdf(
         "book_pages_with_annotations": sorted(
             {str(r["book_page"]) for r in rows if r["book_page"]},
             key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else x),
+        ),
+        "entries_found": len(rows),
+
+        "root_relations": sum(
+            r.get("relation_type")
+            == "ROOT"
+            for r in rows
+        ),
+
+        "reply_relations": sum(
+            r.get("relation_type")
+            == "REPLY"
+            for r in rows
+        ),
+
+        "group_relations": sum(
+            r.get("relation_type")
+            == "GROUP"
+            for r in rows
+        ),
+
+        "comments_found": sum(
+            r.get("entry_type")
+            == "COMMENT"
+            for r in rows
+        ),
+
+        "replies_found": sum(
+            r.get("entry_type")
+            == "REPLY"
+            for r in rows
+        ),
+
+        "max_reply_depth": max(
+            (
+                int(
+                    r.get(
+                        "reply_depth",
+                        0,
+                    )
+                    or 0
+                )
+                for r in rows
+            ),
+            default=0,
+        ),
+
+        "raw_authors": sorted(
+            {
+                str(
+                    r.get(
+                        "raw_author",
+                        "",
+                    )
+                ).strip()
+                for r in rows
+                if str(
+                    r.get(
+                        "raw_author",
+                        "",
+                    )
+                ).strip()
+            },
+            key=str.casefold,
         ),
     }
     for row in rows:

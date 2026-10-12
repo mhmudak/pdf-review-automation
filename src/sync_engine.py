@@ -716,6 +716,90 @@ def normalize_reviewer_tab_schema(
         "Refusing automatic migration."
     )
 
+def normalize_configured_output_tabs(
+    output_sheets: SheetsAdapter,
+    reviewer_tab_map: dict[str, str] | None,
+) -> dict[str, str]:
+    """
+    Normalize every configured reviewer output tab,
+    even if that reviewer currently has no records
+    in _Database.
+
+    This gives all existing reviewer tabs one
+    canonical schema before reconciliation.
+    """
+    reviewer_tab_map = (
+        reviewer_tab_map
+        or {}
+    )
+
+    results: dict[str, str] = {}
+
+    tab_names = {
+        str(tab_name).strip()
+        for tab_name
+        in reviewer_tab_map.values()
+        if str(tab_name).strip()
+    }
+
+    for tab_name in sorted(
+        tab_names
+    ):
+        output_sheets.ensure_sheet(
+            tab_name
+        )
+
+        status = (
+            normalize_reviewer_tab_schema(
+                output_sheets,
+                tab_name,
+            )
+        )
+
+        output_sheets.hide_columns(
+            tab_name,
+            [
+                (6, 8),
+                (10, 12),
+            ],
+        )
+
+        results[
+            tab_name
+        ] = status
+
+    return results
+
+def _normalize_match_text(
+    value: Any,
+) -> str:
+    return " ".join(
+        str(value or "")
+        .split()
+    ).strip()
+
+
+def _legacy_visible_key(
+    row: list[Any],
+) -> tuple[str, str]:
+    padded = _pad_row(
+        row,
+        len(VISIBLE_HEADERS),
+    )
+
+    page = _normalize_match_text(
+        padded[2]
+    )
+
+    comment = _normalize_match_text(
+        padded[3]
+    )
+
+    return (
+        page,
+        comment,
+    )
+
 
 def _upsert_visible_rows(
     output_sheets: SheetsAdapter,
@@ -723,15 +807,20 @@ def _upsert_visible_rows(
     desired_rows: list[list[Any]],
 ) -> dict[str, Any]:
     """
-    Shared output projection engine used by:
-    - normal PDF processing
-    - --reconcile-output
+    Shared reviewer-output upsert engine.
 
-    Upsert key:
-    K = Comment ID
+    Matching order:
 
-    No automatic deletions.
+    1. Canonical Comment ID
+    2. Legacy fallback: exact normalized (Page + Comment)
+
+    Legacy fallback is used only when exactly one existing row matches.
+    Ambiguous matches are never guessed.
+
+    Existing PM/reviewer-controlled fields are preserved.
+    Historical rows are never automatically deleted.
     """
+
     output_sheets.ensure_sheet(
         tab_name
     )
@@ -743,15 +832,11 @@ def _upsert_visible_rows(
         )
     )
 
-    # Hide technical/audit columns:
-    #
-    # G:H = Created Date / Last Modified
-    # K:L = Comment ID / Annotation Type
     output_sheets.hide_columns(
         tab_name,
         [
-            (6, 8),
-            (10, 12),
+            (6, 8),    # Created Date + Last Modified
+            (10, 12),  # Comment ID + Annotation Type
         ],
     )
 
@@ -762,11 +847,25 @@ def _upsert_visible_rows(
         )
     )
 
+    # ---------------------------------------------------------
+    # INDEX 1: canonical Comment ID
+    # ---------------------------------------------------------
+
     existing_by_id: dict[
         str,
-        tuple[
-            int,
-            list[Any],
+        tuple[int, list[Any]],
+    ] = {}
+
+    # ---------------------------------------------------------
+    # INDEX 2: legacy Page + Comment
+    # Multiple rows are retained so ambiguous matches can
+    # fail safely rather than being guessed.
+    # ---------------------------------------------------------
+
+    existing_by_legacy_key: dict[
+        tuple[str, str],
+        list[
+            tuple[int, list[Any]]
         ],
     ] = {}
 
@@ -777,11 +876,13 @@ def _upsert_visible_rows(
         existing_values[1:],
         start=2,
     ):
-        if len(existing) <= 10:
-            continue
+        padded = _pad_row(
+            existing,
+            len(VISIBLE_HEADERS),
+        )
 
         existing_id = str(
-            existing[10]
+            padded[10]
         ).strip()
 
         if existing_id:
@@ -792,24 +893,47 @@ def _upsert_visible_rows(
                 existing,
             )
 
+        legacy_key = (
+            _legacy_visible_key(
+                existing
+            )
+        )
+
+        if (
+            legacy_key[0]
+            and legacy_key[1]
+        ):
+            existing_by_legacy_key.setdefault(
+                legacy_key,
+                [],
+            ).append(
+                (
+                    row_number,
+                    existing,
+                )
+            )
+
     append_rows: list[
         list[Any]
     ] = []
 
     updates: list[
-        tuple[
-            int,
-            list[Any],
-        ]
+        tuple[int, list[Any]]
     ] = []
 
     pending_ids: set[str] = set()
 
+    # Prevent one legacy row from being consumed twice.
+    matched_existing_rows: set[int] = set()
+
     inserted = 0
     updated = 0
     unchanged = 0
+    legacy_migrated = 0
+    ambiguous_legacy_matches = 0
 
     for desired in desired_rows:
+
         desired_row = _pad_row(
             desired,
             len(VISIBLE_HEADERS),
@@ -822,9 +946,12 @@ def _upsert_visible_rows(
         if not sync_id:
             continue
 
-        # Prevent duplicate appends inside the same run.
         if sync_id in pending_ids:
             continue
+
+        # -----------------------------------------------------
+        # FIRST CHOICE: canonical ID
+        # -----------------------------------------------------
 
         existing_entry = (
             existing_by_id.get(
@@ -832,7 +959,60 @@ def _upsert_visible_rows(
             )
         )
 
+        legacy_match_used = False
+
+        # -----------------------------------------------------
+        # SECOND CHOICE: legacy exact Page + Comment
+        # -----------------------------------------------------
+
         if existing_entry is None:
+
+            legacy_key = (
+                _legacy_visible_key(
+                    desired_row
+                )
+            )
+
+            legacy_candidates = [
+                candidate
+                for candidate
+                in existing_by_legacy_key.get(
+                    legacy_key,
+                    [],
+                )
+                if candidate[0]
+                not in matched_existing_rows
+            ]
+
+            if len(
+                legacy_candidates
+            ) == 1:
+                existing_entry = (
+                    legacy_candidates[0]
+                )
+
+                legacy_match_used = True
+
+            elif len(
+                legacy_candidates
+            ) > 1:
+                ambiguous_legacy_matches += 1
+
+                raise RuntimeError(
+                    "Ambiguous legacy reviewer-row match "
+                    f"in tab '{tab_name}' "
+                    f"for page={legacy_key[0]!r}, "
+                    f"comment={legacy_key[1]!r}. "
+                    f"Found {len(legacy_candidates)} candidates. "
+                    "Refusing to guess."
+                )
+
+        # -----------------------------------------------------
+        # NO MATCH: append
+        # -----------------------------------------------------
+
+        if existing_entry is None:
+
             append_rows.append(
                 desired_row
             )
@@ -850,6 +1030,10 @@ def _upsert_visible_rows(
             existing,
         ) = existing_entry
 
+        matched_existing_rows.add(
+            row_number
+        )
+
         merged = _merge_visible_row(
             desired_row,
             existing,
@@ -861,6 +1045,16 @@ def _upsert_visible_rows(
                 len(VISIBLE_HEADERS),
             )
         )
+
+        # -----------------------------------------------------
+        # Legacy match:
+        #
+        # merged row intentionally carries the NEW canonical
+        # Comment ID from desired_row[10].
+        # -----------------------------------------------------
+
+        if legacy_match_used:
+            legacy_migrated += 1
 
         if (
             normalized_existing
@@ -878,25 +1072,25 @@ def _upsert_visible_rows(
 
             updated += 1
 
-    # One append call per reviewer tab.
     output_sheets.append_rows(
         tab_name,
         append_rows,
     )
 
-    # One batch update per reviewer tab.
     output_sheets.batch_update_rows(
         tab_name,
         updates,
     )
 
     return {
-        "migration": (
-            migration_status
-        ),
+        "migration": migration_status,
         "inserted": inserted,
         "updated": updated,
         "unchanged": unchanged,
+        "legacy_migrated": legacy_migrated,
+        "ambiguous_legacy_matches": (
+            ambiguous_legacy_matches
+        ),
     }
 
 
@@ -923,6 +1117,13 @@ def reconcile_output_from_database(
     reviewer_tab_map = (
         reviewer_tab_map
         or {}
+    )
+
+    schema_normalization = (
+        normalize_configured_output_tabs(
+            output_sheets,
+            reviewer_tab_map,
+        )
     )
 
     backend_sheets.ensure_headers(
@@ -953,6 +1154,9 @@ def reconcile_output_from_database(
         "inserted": 0,
         "updated": 0,
         "unchanged": 0,
+        "schema_normalization": (
+            schema_normalization
+        ),
         "tabs": {},
     }
 

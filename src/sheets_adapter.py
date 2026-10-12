@@ -35,6 +35,80 @@ VISIBLE_HEADERS = [
     "Author", "Created Date", "Last Modified", "Resolved?", "Replies", "Comment ID", "Annotation Type",
 ]
 
+DOCUMENT_HEADERS = [
+    "Document Key",
+    "Document Name",
+    "Output Tab",
+    "Master Version",
+    "Current Version ID",
+    "Current Drive File ID",
+    "Current PDF SHA256",
+    "Current Modified Time",
+    "Status",
+    "Last Processed",
+]
+
+
+ENTRY_V2_HEADERS = [
+    "Entry Key",
+    "Document Key",
+    "Version ID",
+    "Drive File ID",
+    "PDF Name",
+    "Drive Link",
+    "PDF SHA256",
+
+    "Entry ID",
+    "Parent Entry ID",
+    "Root Entry ID",
+    "Entry Type",
+    "Reply Depth",
+
+    "Raw Author",
+    "Canonical Author",
+    "Author Status",
+    "Author Resolution Method",
+    "Author Rule ID",
+
+    "PDF Page",
+    "Book Page",
+    "Page Mapping Method",
+    "Page Mapping Confidence",
+
+    "Annotation Type",
+    "Relation Type",
+    "Category",
+    "Content",
+    "Selected Text",
+
+    "Created Date",
+    "Modified Date",
+
+    "Coordinates",
+    "XRef",
+
+    "Active",
+    "Source State",
+
+    "First Seen",
+    "Last Seen",
+]
+
+
+AUTHOR_RULE_HEADERS = [
+    "Rule ID",
+    "Scope",
+    "Document Key",
+    "Version ID",
+    "Root Entry ID",
+    "Entry ID",
+    "Raw Author",
+    "Canonical Author",
+    "Status",
+    "Approved By",
+    "Approved At",
+    "Notes",
+]
 
 class SheetsAdapter:
     def __init__(self, spreadsheet_id: str) -> None:
@@ -135,7 +209,7 @@ class SheetsAdapter:
     def ensure_headers(self, sheet: str, headers: list[str]) -> None:
         self.ensure_sheet(
             sheet,
-            hidden=sheet in {"_Database", "_Files", "_Config"},
+            hidden=sheet in {"_Database", "_Files", "_Config", "_Documents", "_Entries_V2", "_Author Rules",},
         )
 
         current = self._execute(
