@@ -31,8 +31,8 @@ NEEDS_REVIEW_HEADERS = [
 ]
 
 VISIBLE_HEADERS = [
-    "PDF Name", "PDF Drive Link", "Page", "Comment", "Annotation Type",
-    "Author", "Created Date", "Last Modified", "Resolved?", "Replies", "Comment ID",
+    "PDF Name", "PDF Drive Link", "Page", "Comment", "Category",
+    "Author", "Created Date", "Last Modified", "Resolved?", "Replies", "Comment ID", "Annotation Type",
 ]
 
 
@@ -86,8 +86,8 @@ class SheetsAdapter:
         if sheet == "_Config":
             return "D"
 
-        # Reviewer-facing tabs use 11 columns.
-        return "K"
+        # Reviewer-facing tabs use 12 columns.
+        return "L"
 
     def metadata(self, refresh: bool = False) -> dict[str, Any]:
         if self._metadata_cache is not None and not refresh:
@@ -357,3 +357,33 @@ class SheetsAdapter:
         )
 
         self._hidden_columns_cache.add(cache_key)
+
+    def get_range_values(
+        self,
+        sheet: str,
+        cell_range: str,
+    ) -> list[list[Any]]:
+        return self._execute(
+            self.service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"'{sheet}'!{cell_range}",
+            )
+        ).get("values", [])
+
+    def clear_range(
+        self,
+        sheet: str,
+        cell_range: str,
+    ) -> None:
+        self._execute(
+            self.service.spreadsheets().values().clear(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"'{sheet}'!{cell_range}",
+                body={},
+            )
+        )
+
+        self._values_cache.pop(
+            sheet,
+            None,
+        )

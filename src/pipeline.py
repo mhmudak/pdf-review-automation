@@ -33,7 +33,11 @@ from sheets_adapter import (
     NEEDS_REVIEW_HEADERS,
     SheetsAdapter,
 )
-from sync_engine import files_registry_row, sync_annotations
+from sync_engine import (
+    files_registry_row,
+    reconcile_output_from_database,
+    sync_annotations,
+)
 
 
 load_dotenv()
@@ -665,7 +669,64 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--reconcile-output",
+        action="store_true",
+        help=(
+            "Rebuild/reconcile reviewer-facing "
+            "tabs from the canonical _Database "
+            "without processing Drive PDFs."
+        ),
+    )
+
     args = parser.parse_args()
+
+    if args.reconcile_output:
+
+        if not args.spreadsheet_id:
+            parser.error(
+                "Backend spreadsheet ID "
+                "is required for reconciliation"
+            )
+
+        if not args.output_spreadsheet_id:
+            parser.error(
+                "Output spreadsheet ID "
+                "is required for reconciliation"
+            )
+
+        config = load_config(
+            args.config
+        )
+
+        backend_sheets = SheetsAdapter(
+            args.spreadsheet_id
+        )
+
+        output_sheets = SheetsAdapter(
+            args.output_spreadsheet_id
+        )
+
+        result = (
+            reconcile_output_from_database(
+                backend_sheets,
+                output_sheets,
+                reviewer_tab_map=config.get(
+                    "reviewer_output_tabs",
+                    {},
+                ),
+            )
+        )
+
+        print(
+            json.dumps(
+                result,
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+        return
 
     if not args.folder_id:
         parser.error(
