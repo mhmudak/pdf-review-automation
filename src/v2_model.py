@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from versioning import entry_signature
+
 from author_resolution import (
     AuthorResolution,
     AuthorRule,
@@ -102,6 +104,10 @@ def prepare_v2_entries(
         candidate["active"] = True
         candidate["source_state"] = (
             "CURRENT"
+        )
+
+        candidate["entry_signature"] = (
+            entry_signature(candidate)
         )
 
         prepared.append(candidate)

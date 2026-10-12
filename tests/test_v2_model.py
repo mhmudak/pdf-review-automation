@@ -211,3 +211,75 @@ def test_author_summary():
     assert summary["total"] == 2
     assert summary["resolved"] == 1
     assert summary["unresolved"] == 1
+
+
+def test_prepare_v2_entries_adds_entry_signature():
+    from v2_model import prepare_v2_entries
+
+    rows = [
+        {
+            "entry_id": "A1",
+            "raw_author": "Luma Hameed",
+            "pdf_page": 10,
+            "annotation_type": "Text",
+            "entry_type": "COMMENT",
+            "relation_type": "ROOT",
+            "comment": "Original comment",
+        }
+    ]
+
+    prepared = prepare_v2_entries(
+        rows,
+        document_key="BOOK",
+        sha256="a" * 64,
+    )
+
+    assert prepared[0]["entry_signature"]
+    assert len(
+        prepared[0]["entry_signature"]
+    ) == 64
+
+
+def test_author_resolution_does_not_change_entry_signature():
+    from author_resolution import AuthorRule
+    from v2_model import prepare_v2_entries
+
+    row = {
+        "entry_id": "A1",
+        "raw_author": "User",
+        "pdf_page": 10,
+        "annotation_type": "Text",
+        "entry_type": "COMMENT",
+        "relation_type": "ROOT",
+        "comment": "Same PDF content",
+    }
+
+    unresolved = prepare_v2_entries(
+        [row],
+        document_key="BOOK",
+        sha256="b" * 64,
+    )[0]
+
+    resolved = prepare_v2_entries(
+        [row],
+        document_key="BOOK",
+        sha256="b" * 64,
+        author_rules=[
+            AuthorRule(
+                rule_id="R1",
+                scope="VERSION",
+                version_id=(
+                    "BOOK@" + "b" * 64
+                ),
+                raw_author="User",
+                canonical_author=(
+                    "Faten Khalifeh"
+                ),
+            )
+        ],
+    )[0]
+
+    assert (
+        unresolved["entry_signature"]
+        == resolved["entry_signature"]
+    )
