@@ -59,6 +59,7 @@ ENTRY_V2_HEADERS = [
     "PDF SHA256",
 
     "Entry ID",
+    "Entry Signature",
     "Parent Entry ID",
     "Root Entry ID",
     "Entry Type",
@@ -92,6 +93,40 @@ ENTRY_V2_HEADERS = [
 
     "First Seen",
     "Last Seen",
+]
+
+
+ENTRY_HISTORY_HEADERS = [
+    "History Key",
+    "Document Key",
+    "Version ID",
+    "Drive File ID",
+    "PDF SHA256",
+    "Entry ID",
+    "Entry Signature",
+    "Change Type",
+    "Previous Signature",
+    "Raw Author",
+    "Canonical Author",
+    "Author Status",
+    "Parent Entry ID",
+    "Root Entry ID",
+    "Entry Type",
+    "Reply Depth",
+    "PDF Page",
+    "Book Page",
+    "Annotation Type",
+    "Relation Type",
+    "Category",
+    "Content",
+    "Selected Text",
+    "Created Date",
+    "Modified Date",
+    "Coordinates",
+    "XRef",
+    "Active",
+    "Source State",
+    "Recorded At",
 ]
 
 
@@ -164,10 +199,13 @@ class SheetsAdapter:
             return "J"
 
         if sheet == "_Entries_V2":
-            return "AH"
+            return "AI"
+
+        if sheet == "_Entry History":
+            return "AD"
 
         if sheet == "_Author Rules":
-            return "K"
+            return "L"
 
         # Reviewer-facing tabs use 12 columns.
         return "L"
@@ -218,7 +256,15 @@ class SheetsAdapter:
     def ensure_headers(self, sheet: str, headers: list[str]) -> None:
         self.ensure_sheet(
             sheet,
-            hidden=sheet in {"_Database", "_Files", "_Config", "_Documents", "_Entries_V2", "_Author Rules",},
+            hidden=sheet in {
+                "_Database",
+                "_Files",
+                "_Config",
+                "_Documents",
+                "_Entries_V2",
+                "_Entry History",
+                "_Author Rules",
+            },
         )
 
         current = self._execute(
