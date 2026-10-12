@@ -526,3 +526,238 @@ def test_known_sha_allows_pm_author_update():
         ]
         == 0
     )
+
+
+def test_full_pm_author_review_lifecycle():
+    from sheets_adapter import (
+        AUTHOR_REVIEW_HEADERS,
+        AUTHOR_RULE_HEADERS,
+        ENTRY_V2_HEADERS,
+        VERSION_HEADERS,
+    )
+    from v2_run import prepare_v2_run
+
+    # -------------------------------------------------
+    # FIRST PASS:
+    # unresolved generic author
+    # -------------------------------------------------
+
+    first_snapshot = __import__(
+        "backend_cache"
+    ).BackendSnapshot(
+        documents=[],
+        files=[],
+        entries=[],
+        author_rules=[],
+    )
+
+    first_prepared = prepare_v2_run(
+        snapshot=first_snapshot,
+        config={},
+        extracted_rows=[
+            annotation(
+                entry_id="HALA-1",
+                raw_author="user",
+            )
+        ],
+        summary={
+            "sha256": SHA,
+            "entries_found": 1,
+        },
+        document_key="IGCSE_ARABIC_2P",
+        sha256=SHA,
+        drive_file_id="drive-1",
+        pdf_name="trial.pdf",
+        drive_link="",
+        modified_time="",
+        size_bytes=123,
+        processed_at=NOW,
+    )
+
+    canonical = (
+        first_prepared
+        .mutations
+        .insert_entries[0]
+    )
+
+    version_row = (
+        first_prepared.version_row
+    )
+
+    version_id = (
+        first_prepared.version_id
+    )
+
+    review_key = (
+        "IGCSE_ARABIC_2P::"
+        f"{version_id}::user"
+    )
+
+    # -------------------------------------------------
+    # SIMULATE BACKEND AFTER FIRST INGESTION +
+    # PM APPROVAL IN _Author Review
+    # -------------------------------------------------
+
+    approved_review = [
+        review_key,
+        "IGCSE_ARABIC_2P",
+        version_id,
+        "user",
+        1,
+        "HALA-1",
+        "1",
+        "Hello",
+        "",
+        "APPROVE",
+        "Hala Afifi",
+        "VERSION",
+        "PM",
+        NOW,
+        "Confirmed by PM",
+    ]
+
+    batch = {
+        "_Documents": [],
+        "_Versions": [
+            VERSION_HEADERS,
+            [
+                version_row.get(
+                    header,
+                    "",
+                )
+                for header
+                in VERSION_HEADERS
+            ],
+        ],
+        "_Entries_V2": [
+            ENTRY_V2_HEADERS,
+            [
+                canonical.get(
+                    header,
+                    "",
+                )
+                for header
+                in ENTRY_V2_HEADERS
+            ],
+        ],
+        "_Author Rules": [
+            AUTHOR_RULE_HEADERS
+        ],
+        "_Author Review": [
+            AUTHOR_REVIEW_HEADERS,
+            approved_review,
+        ],
+    }
+
+    sheets = FakeSheets(
+        batch=batch
+    )
+
+    # Promotion code reads the review sheet.
+    # Make append_rows mutate the fake backend enough
+    # for refresh=True to see newly inserted rules.
+    original_append = sheets.append_rows
+
+    def append_and_persist(
+        sheet,
+        rows,
+    ):
+        original_append(
+            sheet,
+            rows,
+        )
+
+        if sheet in {
+            "_Author Rules",
+            "_Author Review",
+            "_Entries_V2",
+            "_Entry History",
+            "_Documents",
+            "_Versions",
+        }:
+            if sheet not in sheets.batch:
+                sheets.batch[sheet] = []
+
+            if not sheets.batch[sheet]:
+                if sheet == "_Author Rules":
+                    sheets.batch[sheet] = [
+                        AUTHOR_RULE_HEADERS
+                    ]
+
+            sheets.batch[
+                sheet
+            ].extend(rows)
+
+    sheets.append_rows = (
+        append_and_persist
+    )
+
+    result = execute_v2_pdf(
+        sheets=sheets,
+        config={
+            "document_key":
+                "IGCSE_ARABIC_2P"
+        },
+        extracted_rows=[
+            annotation(
+                entry_id="HALA-1",
+                raw_author="user",
+            )
+        ],
+        summary={
+            "sha256": SHA,
+            "entries_found": 1,
+        },
+        drive_file_id="drive-1",
+        pdf_name="trial.pdf",
+        drive_link="",
+        modified_time="",
+        size_bytes=123,
+        processed_at=NOW,
+    )
+
+    # -------------------------------------------------
+    # PM approval became a real rule
+    # -------------------------------------------------
+
+    assert (
+        result[
+            "author_rule_promotion"
+        ]["inserted"]
+        == 1
+    )
+
+    # Same exact PDF did not become a PDF update.
+    assert (
+        result["entry_changes"][
+            "UPDATED"
+        ]
+        == 0
+    )
+
+    assert (
+        result["entry_changes"][
+            "NEW"
+        ]
+        == 0
+    )
+
+    assert (
+        result["entry_changes"][
+            "REMOVED"
+        ]
+        == 0
+    )
+
+    # Only author metadata changed.
+    assert (
+        result["entry_changes"][
+            "AUTHOR_UPDATED"
+        ]
+        == 1
+    )
+
+    assert (
+        result["action"]
+        == "PROCESSED_V2"
+    )

@@ -310,7 +310,6 @@ class SheetsAdapter:
                 "_Entries_V2",
                 "_Entry History",
                 "_Author Rules",
-                "_Author Review",
             },
         )
 
