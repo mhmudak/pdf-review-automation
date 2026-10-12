@@ -124,7 +124,7 @@ def test_load_v2_snapshot_uses_one_batch_call():
     )
 
 
-def test_ensure_v2_backend_has_five_schemas():
+def test_ensure_v2_backend_has_six_schemas():
     sheets = FakeSheets()
 
     ensure_v2_backend(
@@ -140,6 +140,7 @@ def test_ensure_v2_backend_has_five_schemas():
         "_Entries_V2",
         "_Entry History",
         "_Author Rules",
+        "_Author Review",
     ]
 
 

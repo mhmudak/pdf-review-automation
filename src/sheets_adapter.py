@@ -165,6 +165,25 @@ AUTHOR_RULE_HEADERS = [
     "Notes",
 ]
 
+
+AUTHOR_REVIEW_HEADERS = [
+    "Review Key",
+    "Document Key",
+    "Version ID",
+    "Raw Author",
+    "Entry Count",
+    "Sample Entry IDs",
+    "Sample Pages",
+    "Sample Content",
+    "Suggested Canonical Author",
+    "Decision",
+    "Canonical Author",
+    "Rule Scope",
+    "Reviewed By",
+    "Reviewed At",
+    "Notes",
+]
+
 class SheetsAdapter:
     def __init__(self, spreadsheet_id: str) -> None:
         self.spreadsheet_id = spreadsheet_id
@@ -230,6 +249,9 @@ class SheetsAdapter:
         if sheet == "_Author Rules":
             return "L"
 
+        if sheet == "_Author Review":
+            return "O"
+
         # Reviewer-facing tabs use 12 columns.
         return "L"
 
@@ -288,6 +310,7 @@ class SheetsAdapter:
                 "_Entries_V2",
                 "_Entry History",
                 "_Author Rules",
+                "_Author Review",
             },
         )
 

@@ -5,6 +5,7 @@ from backend_cache import (
     snapshot_from_batch_values,
 )
 from sheets_adapter import (
+    AUTHOR_REVIEW_HEADERS,
     AUTHOR_RULE_HEADERS,
     DOCUMENT_HEADERS,
     ENTRY_HISTORY_HEADERS,
@@ -51,6 +52,10 @@ def ensure_v2_backend(
         (
             "_Author Rules",
             AUTHOR_RULE_HEADERS,
+        ),
+        (
+            "_Author Review",
+            AUTHOR_REVIEW_HEADERS,
         ),
     ]
 
