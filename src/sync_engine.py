@@ -412,7 +412,7 @@ def sync_annotations(
             tab_name,
             VISIBLE_HEADERS,
         )
-        
+
         output_sheets.hide_columns(
             tab_name,
             [

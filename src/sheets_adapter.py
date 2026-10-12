@@ -287,7 +287,7 @@ class SheetsAdapter:
                 output[str(row[key_col]).strip()] = i
 
         return output
-    
+
     def hide_columns(
         self,
         sheet: str,
