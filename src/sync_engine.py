@@ -412,6 +412,14 @@ def sync_annotations(
             tab_name,
             VISIBLE_HEADERS,
         )
+        
+        output_sheets.hide_columns(
+            tab_name,
+            [
+                (6, 8),    # Created Date + Last Modified
+                (10, 11),  # Comment ID
+            ],
+        )
 
         visible_values = (
             output_sheets.get_all_values(

@@ -1,3 +1,4 @@
+from sheets_adapter import VISIBLE_HEADERS
 from sync_engine import visible_row
 
 
@@ -41,3 +42,23 @@ def test_visible_row_prefers_native_annotation_id():
     )
 
     assert row[10] == "native-id-123"
+
+
+def test_visible_schema_keeps_hidden_technical_columns():
+    assert VISIBLE_HEADERS == [
+        "PDF Name",
+        "PDF Drive Link",
+        "Page",
+        "Comment",
+        "Annotation Type",
+        "Author",
+        "Created Date",
+        "Last Modified",
+        "Resolved?",
+        "Replies",
+        "Comment ID",
+    ]
+
+    assert VISIBLE_HEADERS[6] == "Created Date"
+    assert VISIBLE_HEADERS[7] == "Last Modified"
+    assert VISIBLE_HEADERS[10] == "Comment ID"

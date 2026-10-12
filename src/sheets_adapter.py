@@ -50,6 +50,9 @@ class SheetsAdapter:
         # Nothing is persisted between Cloud Run executions.
         self._metadata_cache: dict[str, Any] | None = None
         self._values_cache: dict[str, list[list[Any]]] = {}
+        self._hidden_columns_cache: set[
+            tuple[str, tuple[tuple[int, int], ...]]
+        ] = set()
 
     def _execute(self, request: Any, max_retries: int = 6) -> Any:
         for attempt in range(max_retries + 1):
@@ -284,3 +287,73 @@ class SheetsAdapter:
                 output[str(row[key_col]).strip()] = i
 
         return output
+    
+    def hide_columns(
+        self,
+        sheet: str,
+        column_ranges: list[tuple[int, int]],
+    ) -> None:
+        cache_key = (
+            sheet,
+            tuple(column_ranges),
+        )
+
+        if cache_key in self._hidden_columns_cache:
+            return
+
+        metadata = self.metadata()
+
+        sheet_id = None
+
+        for item in metadata.get("sheets", []):
+            properties = item.get(
+                "properties",
+                {},
+            )
+
+            if properties.get("title") == sheet:
+                sheet_id = properties.get(
+                    "sheetId"
+                )
+                break
+
+        if sheet_id is None:
+            raise ValueError(
+                f"Sheet not found: {sheet}"
+            )
+
+        requests = []
+
+        for start_index, end_index in column_ranges:
+            requests.append(
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "COLUMNS",
+                            "startIndex": start_index,
+                            "endIndex": end_index,
+                        },
+                        "properties": {
+                            "hiddenByUser": True,
+                        },
+                        "fields": "hiddenByUser",
+                    }
+                }
+            )
+
+        if not requests:
+            return
+
+        self._execute(
+            self.service
+            .spreadsheets()
+            .batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body={
+                    "requests": requests
+                },
+            )
+        )
+
+        self._hidden_columns_cache.add(cache_key)
