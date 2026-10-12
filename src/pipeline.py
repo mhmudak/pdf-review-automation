@@ -36,7 +36,6 @@ from sheets_adapter import (
 from sync_engine import (
     files_registry_row,
     reconcile_output_from_database,
-    sync_annotations,
 )
 from backend_router import (
     registry_entry_for_processed_pdf,
