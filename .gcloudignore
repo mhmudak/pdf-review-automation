@@ -1,0 +1,8 @@
+﻿.gcloudignore
+.git
+.gitignore
+
+#!include:.gitignore
+
+!src/data/
+!src/data/historical_hala.json
