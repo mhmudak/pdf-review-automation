@@ -3,10 +3,12 @@ from sheets_adapter import (
     DOCUMENT_HEADERS,
     ENTRY_HISTORY_HEADERS,
     ENTRY_V2_HEADERS,
+    VERSION_HEADERS,
 )
 
 
 def test_v2_schema_column_counts():
+    assert len(VERSION_HEADERS) == 16
     assert len(DOCUMENT_HEADERS) == 10
     assert len(ENTRY_V2_HEADERS) == 35
     assert len(ENTRY_HISTORY_HEADERS) == 30

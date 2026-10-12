@@ -35,6 +35,26 @@ VISIBLE_HEADERS = [
     "Author", "Created Date", "Last Modified", "Resolved?", "Replies", "Comment ID", "Annotation Type",
 ]
 
+VERSION_HEADERS = [
+    "Version ID",
+    "Document Key",
+    "Drive File ID",
+    "PDF Name",
+    "Drive Link",
+    "Modified Time",
+    "Size Bytes",
+    "PDF SHA256",
+    "Version Status",
+    "Authors Found",
+    "Pages",
+    "Entries Found",
+    "Root Comments",
+    "Replies",
+    "Processed At",
+    "Message / Error",
+]
+
+
 DOCUMENT_HEADERS = [
     "Document Key",
     "Document Name",
@@ -195,6 +215,9 @@ class SheetsAdapter:
         if sheet == "_Config":
             return "D"
 
+        if sheet == "_Versions":
+            return "P"
+
         if sheet == "_Documents":
             return "J"
 
@@ -261,6 +284,7 @@ class SheetsAdapter:
                 "_Files",
                 "_Config",
                 "_Documents",
+                "_Versions",
                 "_Entries_V2",
                 "_Entry History",
                 "_Author Rules",

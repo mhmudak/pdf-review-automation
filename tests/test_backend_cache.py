@@ -12,7 +12,7 @@ def snapshot():
         files=[
             {
                 "Document Key": "DOC1",
-                "SHA256": "abc",
+                "PDF SHA256": "abc",
             }
         ],
         entries=[
@@ -138,10 +138,10 @@ def test_snapshot_from_batch_values():
                 "V1",
             ],
         ],
-        "_Files": [
+        "_Versions": [
             [
                 "Document Key",
-                "SHA256",
+                "PDF SHA256",
             ],
             [
                 "DOC1",

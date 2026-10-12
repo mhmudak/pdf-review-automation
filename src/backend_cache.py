@@ -84,7 +84,13 @@ class BackendSnapshot:
             ).strip()
 
             sha = str(
-                row.get("SHA256", "")
+                row.get(
+                    "PDF SHA256",
+                    row.get(
+                        "SHA256",
+                        "",
+                    ),
+                )
             ).strip().lower()
 
             if document_key and sha:
@@ -236,7 +242,7 @@ def snapshot_from_batch_values(
         ),
         files=rows_to_dicts(
             batch.get(
-                "_Files",
+                "_Versions",
                 [],
             )
         ),
