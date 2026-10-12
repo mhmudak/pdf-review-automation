@@ -57,6 +57,7 @@ def test_new_entry():
     assert plan.counts() == {
         "NEW": 1,
         "UPDATED": 0,
+        "AUTHOR_UPDATED": 0,
         "UNCHANGED": 0,
         "REMOVED": 0,
     }
@@ -190,6 +191,7 @@ def test_mixed_version():
     assert plan.counts() == {
         "NEW": 1,
         "UPDATED": 1,
+        "AUTHOR_UPDATED": 0,
         "UNCHANGED": 1,
         "REMOVED": 1,
     }
@@ -249,3 +251,54 @@ def test_missing_signature_fails_closed():
                 }
             ],
         )
+
+
+def test_author_resolution_change_is_not_pdf_update():
+    previous = old(
+        "A",
+        "same-signature",
+    )
+
+    previous.update(
+        {
+            "Canonical Author": "",
+            "Author Status": "NEEDS_REVIEW",
+            "Author Resolution Method": "UNRESOLVED",
+            "Author Rule ID": "",
+        }
+    )
+
+    current = prepared(
+        "A",
+        "same-signature",
+    )
+
+    current.update(
+        {
+            "canonical_author": "Hala Afifi",
+            "author_status": "RESOLVED",
+            "author_resolution_method": "ENTRY_RULE",
+            "author_rule_id": "R-HALA-001",
+        }
+    )
+
+    plan = plan_v2_changes(
+        snapshot([previous]),
+        "BOOK",
+        [current],
+    )
+
+    assert plan.counts() == {
+        "NEW": 0,
+        "UPDATED": 0,
+        "AUTHOR_UPDATED": 1,
+        "UNCHANGED": 0,
+        "REMOVED": 0,
+    }
+
+    change = plan.author_updated[0]
+
+    assert (
+        change.previous["Entry Signature"]
+        == change.current["entry_signature"]
+    )

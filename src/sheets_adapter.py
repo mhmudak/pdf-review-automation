@@ -422,6 +422,39 @@ class SheetsAdapter:
             for sheet in sheets
         }
 
+    def get_row_values(
+        self,
+        sheet: str,
+        row_number: int,
+    ) -> list[Any]:
+
+        result = self._execute(
+            self.service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=(
+                    self.spreadsheet_id
+                ),
+                range=(
+                    f"'{sheet}'!"
+                    f"A{row_number}:"
+                    f"{self._end_column(sheet)}"
+                    f"{row_number}"
+                ),
+            )
+        )
+
+        values = result.get(
+            "values",
+            [],
+        )
+
+        return (
+            values[0]
+            if values
+            else []
+        )
+
     def append_rows(
         self,
         sheet: str,

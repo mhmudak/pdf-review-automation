@@ -238,3 +238,72 @@ def test_mixed_version_only_writes_changes():
         "DEACTIVATE": 1,
         "HISTORY": 3,
     }
+
+
+def test_author_update_writes_canonical_and_history():
+    previous = old(
+        "A",
+        "same-signature",
+    )
+
+    previous.update(
+        {
+            "Canonical Author": "",
+            "Author Status": "NEEDS_REVIEW",
+            "Author Resolution Method": "UNRESOLVED",
+            "Author Rule ID": "",
+        }
+    )
+
+    current = prepared(
+        "A",
+        "same-signature",
+    )
+
+    current.update(
+        {
+            "canonical_author": "Hala Afifi",
+            "author_status": "RESOLVED",
+            "author_resolution_method": "ENTRY_RULE",
+            "author_rule_id": "R-HALA-001",
+        }
+    )
+
+    plan = plan_v2_changes(
+        snapshot([previous]),
+        "BOOK",
+        [current],
+    )
+
+    mutations = build_v2_mutations(
+        plan,
+        recorded_at=NOW,
+    )
+
+    assert mutations.counts() == {
+        "INSERT": 0,
+        "UPDATE": 1,
+        "DEACTIVATE": 0,
+        "HISTORY": 1,
+    }
+
+    assert (
+        mutations.update_entries[0][
+            "Canonical Author"
+        ]
+        == "Hala Afifi"
+    )
+
+    assert (
+        mutations.history_rows[0][
+            "Change Type"
+        ]
+        == "AUTHOR_UPDATED"
+    )
+
+    assert (
+        mutations.history_rows[0][
+            "Previous Signature"
+        ]
+        == "same-signature"
+    )

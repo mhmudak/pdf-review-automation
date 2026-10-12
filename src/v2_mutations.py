@@ -509,7 +509,10 @@ def build_v2_mutations(
 
             continue
 
-        if change.change_type == "UPDATED":
+        if change.change_type in {
+            "UPDATED",
+            "AUTHOR_UPDATED",
+        }:
             assert change.current is not None
             assert change.previous is not None
 
@@ -533,7 +536,7 @@ def build_v2_mutations(
 
             history.append(
                 _history_row(
-                    change_type="UPDATED",
+                    change_type=change.change_type,
                     document_key=plan.document_key,
                     current=change.current,
                     previous=change.previous,

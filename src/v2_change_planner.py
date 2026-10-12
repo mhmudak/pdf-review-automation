@@ -45,6 +45,14 @@ class V2ChangePlan:
         )
 
     @property
+    def author_updated(self) -> tuple[PlannedEntryChange, ...]:
+        return tuple(
+            item
+            for item in self.changes
+            if item.change_type == "AUTHOR_UPDATED"
+        )
+
+    @property
     def removed(self) -> tuple[PlannedEntryChange, ...]:
         return tuple(
             item
@@ -56,6 +64,7 @@ class V2ChangePlan:
         return {
             "NEW": len(self.new),
             "UPDATED": len(self.updated),
+            "AUTHOR_UPDATED": len(self.author_updated),
             "UNCHANGED": len(self.unchanged),
             "REMOVED": len(self.removed),
         }
@@ -117,6 +126,50 @@ def _new_signature(
             "",
         )
     ).strip()
+
+
+def _author_resolution_changed(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+) -> bool:
+    pairs = (
+        (
+            "Canonical Author",
+            "canonical_author",
+        ),
+        (
+            "Author Status",
+            "author_status",
+        ),
+        (
+            "Author Resolution Method",
+            "author_resolution_method",
+        ),
+        (
+            "Author Rule ID",
+            "author_rule_id",
+        ),
+    )
+
+    for old_key, new_key in pairs:
+        old_value = str(
+            previous.get(
+                old_key,
+                "",
+            )
+        ).strip()
+
+        new_value = str(
+            current.get(
+                new_key,
+                "",
+            )
+        ).strip()
+
+        if old_value != new_value:
+            return True
+
+    return False
 
 
 def plan_v2_changes(
@@ -245,12 +298,18 @@ def plan_v2_changes(
 
         elif (
             _old_signature(previous)
-            == _new_signature(current)
+            != _new_signature(current)
         ):
-            change_type = "UNCHANGED"
+            change_type = "UPDATED"
+
+        elif _author_resolution_changed(
+            previous,
+            current,
+        ):
+            change_type = "AUTHOR_UPDATED"
 
         else:
-            change_type = "UPDATED"
+            change_type = "UNCHANGED"
 
         changes.append(
             PlannedEntryChange(
