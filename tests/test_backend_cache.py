@@ -201,3 +201,91 @@ def test_snapshot_from_batch_values():
         ]
         == "R1"
     )
+
+
+def test_entry_for_document_uses_composite_identity():
+    snapshot = BackendSnapshot(
+        documents=[],
+        files=[],
+        entries=[
+            {
+                "Document Key": "BOOK-A",
+                "Entry ID": "UUID-1",
+                "Content": "A",
+            },
+            {
+                "Document Key": "BOOK-B",
+                "Entry ID": "UUID-1",
+                "Content": "B",
+            },
+        ],
+        author_rules=[],
+    )
+
+    assert (
+        snapshot.entry_for_document(
+            "BOOK-A",
+            "UUID-1",
+        )["Content"]
+        == "A"
+    )
+
+    assert (
+        snapshot.entry_for_document(
+            "BOOK-B",
+            "UUID-1",
+        )["Content"]
+        == "B"
+    )
+
+
+def test_ambiguous_global_entry_lookup_fails_closed():
+    import pytest
+
+    snapshot = BackendSnapshot(
+        documents=[],
+        files=[],
+        entries=[
+            {
+                "Document Key": "BOOK-A",
+                "Entry ID": "UUID-1",
+            },
+            {
+                "Document Key": "BOOK-B",
+                "Entry ID": "UUID-1",
+            },
+        ],
+        author_rules=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="ambiguous",
+    ):
+        snapshot.entry(
+            "UUID-1"
+        )
+
+
+def test_duplicate_canonical_entry_fails_closed():
+    import pytest
+
+    with pytest.raises(
+        ValueError,
+        match="Duplicate canonical entry",
+    ):
+        BackendSnapshot(
+            documents=[],
+            files=[],
+            entries=[
+                {
+                    "Document Key": "BOOK",
+                    "Entry ID": "UUID-1",
+                },
+                {
+                    "Document Key": "BOOK",
+                    "Entry ID": "UUID-1",
+                },
+            ],
+            author_rules=[],
+        )

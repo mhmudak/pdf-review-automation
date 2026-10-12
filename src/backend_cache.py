@@ -23,9 +23,14 @@ class BackendSnapshot:
             list[dict[str, Any]],
         ] = {}
 
+        self._entries_by_key: dict[
+            tuple[str, str],
+            dict[str, Any],
+        ] = {}
+
         self._entries_by_id: dict[
             str,
-            dict[str, Any],
+            list[dict[str, Any]],
         ] = {}
 
         for row in self.entries:
@@ -43,10 +48,30 @@ class BackendSnapshot:
                     [],
                 ).append(row)
 
-            if entry_id:
-                self._entries_by_id[
-                    entry_id
+            if not entry_id:
+                continue
+
+            if document_key:
+                key = (
+                    document_key,
+                    entry_id,
+                )
+
+                if key in self._entries_by_key:
+                    raise ValueError(
+                        "Duplicate canonical entry "
+                        f"for {document_key!r} / "
+                        f"{entry_id!r}"
+                    )
+
+                self._entries_by_key[
+                    key
                 ] = row
+
+            self._entries_by_id.setdefault(
+                entry_id,
+                [],
+            ).append(row)
 
         self._files_by_sha: dict[
             tuple[str, str],
@@ -87,13 +112,45 @@ class BackendSnapshot:
             )
         )
 
+    def entry_for_document(
+        self,
+        document_key: str,
+        entry_id: str,
+    ) -> dict[str, Any] | None:
+        return self._entries_by_key.get(
+            (
+                str(document_key).strip(),
+                str(entry_id).strip(),
+            )
+        )
+
     def entry(
         self,
         entry_id: str,
     ) -> dict[str, Any] | None:
-        return self._entries_by_id.get(
-            str(entry_id).strip()
+        """
+        Backward-compatible lookup.
+
+        If the same Entry ID exists in more than one
+        document, fail closed instead of guessing.
+        """
+
+        matches = self._entries_by_id.get(
+            str(entry_id).strip(),
+            [],
         )
+
+        if not matches:
+            return None
+
+        if len(matches) > 1:
+            raise ValueError(
+                "Entry ID is ambiguous across "
+                "documents; use "
+                "entry_for_document()."
+            )
+
+        return matches[0]
 
     def sha_known(
         self,
