@@ -20,6 +20,9 @@ def synchronize_processed_pdf(
     summary: dict[str, Any],
     drive_file: Any,
     run_id: str,
+    historical_author_by_entry_id: (
+        dict[str, str] | None
+    ) = None,
     master_version: str = "",
 ) -> dict[str, Any]:
     """
@@ -41,6 +44,9 @@ def synchronize_processed_pdf(
             modified_time=drive_file.modified_time,
             size_bytes=drive_file.size,
             master_version=master_version,
+            historical_author_by_entry_id=(
+                historical_author_by_entry_id
+            ),
         )
 
         author_summary = v2_result.get(

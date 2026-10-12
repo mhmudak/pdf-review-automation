@@ -41,6 +41,9 @@ from backend_router import (
     registry_entry_for_processed_pdf,
     synchronize_processed_pdf,
 )
+from historical_authors import (
+    load_historical_author_map,
+)
 from v2_backend import ensure_v2_backend
 
 
@@ -88,6 +91,18 @@ def process_drive_folder(
         "WORKFLOW2_V2_ENABLED",
         default=False,
     )
+
+    historical_author_by_entry_id = (
+        load_historical_author_map(config)
+        if v2_enabled
+        else {}
+    )
+
+    if historical_author_by_entry_id:
+        print(
+            "Historical author provenance loaded: "
+            f"{len(historical_author_by_entry_id)} IDs"
+        )
 
     print(
         "Backend mode: "
