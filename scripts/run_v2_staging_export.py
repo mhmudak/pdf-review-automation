@@ -1,14 +1,19 @@
-"""Staging-only verified PM comment export execution."""
+"""Verified comment and reply export ? staging only.
+
+Uses durable source baseline and existing guarded writer.
+Does not commit checkpoints, advance baselines, or send emails.
+"""
 
 import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "scripts"))
+PROJECT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT / "src"))
+sys.path.insert(0, str(PROJECT / "scripts"))
 
 from sheets_adapter import SheetsAdapter
+from v2_pm_combined_plan import plan_verified_pm_cells
 from v2_pm_safe_writer import GuardedPMWriter, CellChange
 from v2_pm_export_preflight import main as preflight
 
@@ -16,58 +21,76 @@ STAGING = "1X4NN9gnvQdXc65cPk9B-p2W-yiBlqZ2rcg8U-ujd2N4"
 TAB = "Trial PDF - All Data"
 
 
-def prepare_changes(source_plan, comment_plan):
-    blockers = []
-
-    if source_plan["held_for_review"]:
-        blockers.append("SOURCE_CONFLICT_OR_REPLY_CHANGE")
-
-    if source_plan["new_root_candidates"]:
-        blockers.append("NEW_ROOT_INSERTION_NOT_CONNECTED")
-
-    if source_plan["historical_root_ids"]:
-        blockers.append("HISTORICAL_ROOT_REQUIRES_REVIEW")
-
-    if comment_plan["conflicts"]:
-        blockers.append("COMMENT_CELL_CONFLICT")
-
-    if blockers:
+def convert_candidates(plan):
+    """Reject unsupported fields before any write."""
+    if plan["blockers"]:
         raise RuntimeError(
-            "EXPORT_BLOCKED: " + ", ".join(blockers)
+            "PM_EXPORT_BLOCKED: " + repr(plan["blockers"][:10])
         )
 
-    changes = []
+    if plan["new_root_count"]:
+        raise RuntimeError("NEW_ROOT_INSERTION_NOT_CONNECTED")
 
-    for item in comment_plan["cell_update_candidates"]:
-        if item.get("field") != "Comment":
-            raise RuntimeError("Unexpected writable field")
+    result = []
+    seen = set()
 
-        if not str(item["cell"]).startswith("E"):
-            raise RuntimeError("Unexpected comment column")
+    for item in plan["cell_update_candidates"]:
+        cell = str(item["cell"])
+        field = str(item["field"])
 
-        changes.append(
+        if cell in seen:
+            raise RuntimeError("Duplicate target cell")
+        seen.add(cell)
+
+        allowed = (
+            (field == "Comment" and cell.startswith("E"))
+            or (
+                field in ("Reply 1", "Reply 2", "Reply 3")
+                and cell.startswith({
+                    "Reply 1": "F",
+                    "Reply 2": "G",
+                    "Reply 3": "H",
+                }[field])
+            )
+            or (
+                field == "Reply Entry IDs"
+                and cell.startswith("V")
+            )
+        )
+
+        if not allowed:
+            raise RuntimeError(
+                f"Unexpected candidate field/cell: {field}/{cell}"
+            )
+
+        result.append(
             CellChange(
                 root_id=item["root_entry_id"],
-                cell=item["cell"],
+                cell=cell,
                 expected_value=item["expected_value"],
                 new_value=item["new_value"],
             )
         )
 
-    return changes
+    return result
 
 
 def main(apply):
     comparison = preflight()
 
-    changes = prepare_changes(
-        comparison["source_plan"],
-        comparison["comment_plan"],
+    plan = plan_verified_pm_cells(
+        comparison["pm_values"],
+        comparison["previous_projection"],
+        comparison["current_projection"],
     )
 
-    print("\n=== GUARDED V2 STAGING EXPORT ===")
-    print("Destination:", TAB)
-    print("Authorized comment changes:", len(changes))
+    changes = convert_candidates(plan)
+
+    print("\n=== COMBINED V2 STAGING EXPORT ===")
+    print("Destination: STAGING ONLY")
+    print("Authorized cells:", [x.cell for x in changes])
+    print("Already applied:", plan["already_applied"])
+    print("Blockers:", len(plan["blockers"]))
 
     adapter = SheetsAdapter(STAGING)
 
@@ -79,29 +102,25 @@ def main(apply):
         authorized_tab=TAB,
     )
 
-    # Explicitly inspect target cells using the guarded writer.
     result = writer.apply(
         changes,
         allow_writes=apply,
     )
 
-    print("Pending cells:", result["pending"])
-    print("Already applied:", result["already_applied"])
-    print("Written cells:", result["written"])
+    print("Pending:", result["pending"])
+    print("Written:", result["written"])
 
     if not apply:
-        print("DRY RUN ? no writes performed")
+        print("DRY RUN ? no writes")
     elif result["verified"]:
-        print("PASS: Guarded cell write/readback verified")
+        print("PASS: Authorized cells verified")
     else:
-        raise RuntimeError("Export was not verified")
+        raise RuntimeError("Write verification incomplete")
 
-    # A successful cell update is NOT yet a completed PDF
-    # export until its next durable baseline/checkpoint is
-    # committed. Never send an email from this runner.
     print("Checkpoint completion: NOT ATTEMPTED")
+    print("Source baseline advancement: NOT ATTEMPTED")
     print("Notifications: DISABLED")
-    print("Production PM spreadsheet: UNCHANGED")
+    print("Production PM: UNCHANGED")
 
 
 if __name__ == "__main__":

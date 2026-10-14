@@ -238,6 +238,8 @@ def main():
         "source_plan": plan,
         "comment_plan": comments,
         "pm_values": pm_values,
+        "previous_projection": baseline,
+        "current_projection": current,
     }
 
 
