@@ -211,6 +211,32 @@ def process_drive_folder(
         # no extraction, no output spreadsheet,
         # and no notification work.
         if not files_needing_processing:
+            # Strict V2 mode must never silently ignore a
+            # previously interrupted PM export. Recovery
+            # execution will be connected separately.
+            if (
+                v2_enabled
+                and config.get("v2_require_verified_pm_export")
+                is True
+            ):
+                from v2_pm_pending import unfinished_pm_exports
+
+                pending_exports = unfinished_pm_exports(
+                    backend_sheets
+                )
+
+                if pending_exports:
+                    states = sorted({
+                        item["state"]
+                        for item in pending_exports
+                    })
+                    raise RuntimeError(
+                        "V2_PM_RECOVERY_REQUIRED: "
+                        f"{len(pending_exports)} unfinished "
+                        f"PM export(s); states={states}. "
+                        "Cannot take unchanged-PDF fast exit."
+                    )
+
             print(
                 "Preflight complete: "
                 "all PDFs unchanged. "
