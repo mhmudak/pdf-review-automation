@@ -92,6 +92,19 @@ def process_drive_folder(
         default=False,
     )
 
+    require_verified_pm_export = (
+        v2_enabled
+        and config.get("v2_require_verified_pm_export") is True
+    )
+
+    v2_pm_exporter = None
+
+    if require_verified_pm_export:
+        # Import before processing any PDF.
+        # Missing/incomplete coordinator must fail closed.
+        from v2_pm_export_coordinator import export_verified_pm
+        v2_pm_exporter = export_verified_pm
+
     historical_author_by_entry_id = (
         load_historical_author_map(config)
         if v2_enabled
@@ -507,6 +520,10 @@ def process_drive_folder(
                             summary=summary,
                             drive_file=f,
                             run_id=run_id,
+                            historical_author_by_entry_id=(
+                                historical_author_by_entry_id
+                            ),
+                            v2_pm_exporter=v2_pm_exporter,
                             master_version=str(
                                 master_meta.get(
                                     "version",
