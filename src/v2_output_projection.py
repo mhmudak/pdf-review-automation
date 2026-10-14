@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+import json
+from datetime import datetime, timezone
+import math
 from typing import Any
 
 
@@ -14,7 +16,8 @@ BASE_HEADERS = [
 
 AFTER_REPLIES = [
     "Category", "Selected Text", "Annotation Type",
-    "Root Entry ID", "Group Entry IDs", "Reply Entry IDs",
+    "Root Entry ID", "Relation Type", "Parent Entry ID",
+    "Group Entry IDs", "Group Parent Links", "Reply Entry IDs",
 ]
 
 
@@ -37,10 +40,22 @@ def page_key(value: Any) -> tuple[int, int, str]:
 
 
 def timestamp(value: Any) -> float:
+    """Deterministic UTC instant; naive ISO dates assume UTC."""
+    text = str(value or "").strip()
+
+    if not text:
+        return 0.0
+
     try:
-        return datetime.fromisoformat(
-            str(value).replace("Z", "+00:00")
-        ).timestamp()
+        dt = datetime.fromisoformat(
+            text.replace("Z", "+00:00").replace("z", "+00:00")
+        )
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return dt.timestamp()
+
     except (ValueError, TypeError, OverflowError):
         return 0.0
 
@@ -60,7 +75,10 @@ def reading_key(
     def coordinate(name: str):
         try:
             value = entry.get(name)
-            return float(value) if value is not None else None
+            if value is None or str(value).strip() == "":
+                return None
+            number = float(value)
+            return number if math.isfinite(number) else None
         except (ValueError, TypeError):
             return None
 
@@ -214,9 +232,12 @@ def project_entries(
             parent_id = str(
                 current.get("parent_entry_id") or ""
             ).strip()
-            if not parent_id:
-                return ""
-            current = by_id.get(parent_id)
+            if not parent_id or parent_id not in by_id:
+                # An orphan GROUP becomes a visible root.
+                # Replies to that GROUP must remain attached.
+                return current_id if relation == "GROUP" else ""
+
+            current = by_id[parent_id]
         return ""
 
     roots = []
@@ -239,7 +260,9 @@ def project_entries(
         root_id = find_root(entry)
 
         if relation == "GROUP":
-            if root_id:
+            # An orphan GROUP resolves to its own Entry ID.
+            # It becomes a visible root, not a group of itself.
+            if root_id and root_id != str(entry["entry_id"]):
                 groups[root_id].append(entry)
             else:
                 orphan_groups.append(entry)
@@ -253,6 +276,11 @@ def project_entries(
             f"{len(orphan_replies)} orphan replies; "
             "cannot safely project all conversations"
         )
+
+    # GROUP annotations whose parent cannot be found
+    # become independent visible rows. Linked GROUP
+    # annotations remain attached as audit metadata.
+    roots.extend(orphan_groups)
 
     maximum = max(
         (len(items) for items in replies.values()),
@@ -299,6 +327,28 @@ def project_entries(
             "Selected Text": root.get("selected_text", ""),
             "Annotation Type": root.get("annotation_type", ""),
             "Root Entry ID": root_id,
+            "Relation Type": str(
+                root.get("relation_type") or "ROOT"
+            ).upper(),
+            "Parent Entry ID": str(
+                root.get("parent_entry_id") or ""
+            ),
+            "Group Parent Links": json.dumps(
+                [
+                    {
+                        "entry_id": str(item["entry_id"]),
+                        "parent_entry_id": str(
+                            item.get("parent_entry_id") or ""
+                        ),
+                        "relation_type": str(
+                            item.get("relation_type") or "GROUP"
+                        ).upper(),
+                    }
+                    for item in associated
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             "Group Entry IDs": ", ".join(
                 str(item["entry_id"]) for item in associated
             ),
