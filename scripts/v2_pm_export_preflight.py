@@ -234,6 +234,12 @@ def main():
     print("Notifications: 0")
     print("Production PM unchanged")
 
+    return {
+        "source_plan": plan,
+        "comment_plan": comments,
+        "pm_values": pm_values,
+    }
+
 
 if __name__ == "__main__":
     main()
