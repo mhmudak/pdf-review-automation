@@ -45,6 +45,54 @@ def plan_verified_pm_cells(
             "Reply Entry IDs": row[21],
         })
 
+    # Verify actual PM reply identities independently of policy_pm.
+    # policy_pm represents source state and must never conceal
+    # an unauthorized change to the destination's reply IDs.
+    from v2_pm_reply_delta import reply_ids
+
+    actual_reply_conflicts = []
+    current_lookup = {
+        str(row["Root Entry ID"]): row
+        for row in current_projection
+    }
+
+    for pm_row in pm:
+        root_id = pm_row["Root Entry ID"]
+        before = previous.get(root_id)
+        if before is None:
+            continue
+
+        actual_ids = reply_ids(pm_row)
+        previous_ids = reply_ids(before)
+        current_row = current_lookup.get(root_id)
+        current_ids = (
+            reply_ids(current_row)
+            if current_row is not None
+            else []
+        )
+
+        # During an interrupted verified reply append, the PM
+        # may already contain the authorized current ID sequence.
+        # No other divergence is permitted.
+        authorized_append = (
+            len(current_ids) > len(previous_ids)
+            and current_ids[:len(previous_ids)] == previous_ids
+        )
+
+        valid = (
+            actual_ids == previous_ids
+            or (
+                authorized_append
+                and actual_ids == current_ids
+            )
+        )
+
+        if not valid:
+            actual_reply_conflicts.append({
+                "root_entry_id": root_id,
+                "reason": "PM_REPLY_ID_BASELINE_CONFLICT",
+            })
+
     # Authorize source changes against the previously verified
     # source, not against a potentially half-written destination.
     # Actual PM values are checked by the cell planners below.
@@ -90,14 +138,59 @@ def plan_verified_pm_cells(
         for item in reply_source["new_reply_cell_candidates"]
     } - blocked_roots
 
-    blockers = []
+    blockers = list(actual_reply_conflicts)
+
+    current_by_root = {
+        str(row["Root Entry ID"]): row
+        for row in current_projection
+    }
+
+    # Historical reply presentation differences are not new
+    # PDF changes. Only suppress the general source warning
+    # when the source reply sequence itself is unchanged and
+    # PM still retains the previously verified reply IDs.
+    from v2_pm_reply_delta import reply_ids
+
+    pm_by_root = {
+        row["Root Entry ID"]: row
+        for row in pm
+    }
+
+    def source_replies_unchanged(root_id):
+        before = previous.get(root_id)
+        after = current_by_root.get(root_id)
+        destination = pm_by_root.get(root_id)
+
+        if not before or not after or not destination:
+            return False
+
+        old_ids = reply_ids(before)
+        new_ids = reply_ids(after)
+        pm_ids = reply_ids(destination)
+
+        if old_ids != new_ids or pm_ids != old_ids:
+            return False
+
+        for position in range(1, len(old_ids) + 1):
+            field = f"Reply {position}"
+            if (
+                str(before.get(field) or "").strip()
+                != str(after.get(field) or "").strip()
+            ):
+                return False
+
+        return True
 
     for item in source["held_for_review"]:
-        if (
-            item["reason"] == "REPLY_CHANGE_NEEDS_ID_AWARE_PLANNER"
-            and str(item["id"]) in accepted_reply_roots
-        ):
-            continue
+        root_id = str(item.get("id") or "")
+
+        if item.get("reason") == "REPLY_CHANGE_NEEDS_ID_AWARE_PLANNER":
+            if root_id in accepted_reply_roots:
+                continue
+
+            if source_replies_unchanged(root_id):
+                continue
+
         blockers.append(item)
 
     blockers.extend(reply_source["held_for_review"])

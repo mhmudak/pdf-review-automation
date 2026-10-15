@@ -136,3 +136,72 @@ def test_new_root_is_blocked_until_insertion_connected():
     result = run(pm(), source(), updated)
     assert result["blockers"]
     assert result["cell_update_candidates"] == []
+
+
+def test_historical_reply_display_difference_allows_comment_change():
+    """An old PM display difference must not block a new comment."""
+    before = source(
+        replies=("Original PDF reply",),
+        ids="reply-a",
+    )
+    after = source(
+        comment="Revised",
+        replies=("Original PDF reply",),
+        ids="reply-a",
+    )
+    result = run(
+        pm(
+            replies=("Original PDF reply  ",),
+            ids="reply-a",
+        ),
+        before,
+        after,
+    )
+    assert result["blockers"] == []
+    assert [
+        item["cell"]
+        for item in result["cell_update_candidates"]
+    ] == ["E2"]
+
+
+def test_existing_reply_edit_is_not_silently_authorized():
+    before = source(
+        replies=("Original reply",),
+        ids="reply-a",
+    )
+    after = source(
+        replies=("Changed reply",),
+        ids="reply-a",
+    )
+    result = run(
+        pm(
+            replies=("Original reply",),
+            ids="reply-a",
+        ),
+        before,
+        after,
+    )
+    assert result["blockers"]
+    assert result["cell_update_candidates"] == []
+
+
+def test_reply_id_conflict_remains_blocked():
+    before = source(
+        replies=("Original reply",),
+        ids="reply-a",
+    )
+    after = source(
+        comment="Revised",
+        replies=("Original reply",),
+        ids="reply-a",
+    )
+    result = run(
+        pm(
+            replies=("Original reply",),
+            ids="different-reply-id",
+        ),
+        before,
+        after,
+    )
+    assert result["blockers"]
+    assert result["cell_update_candidates"] == []
