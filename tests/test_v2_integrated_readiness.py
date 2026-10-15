@@ -67,7 +67,7 @@ def test_prior_completed_version_does_not_fast_skip(monkeypatch):
 
 
 def test_production_destination_still_locked(monkeypatch):
-    with pytest.raises(PermissionError, match="STAGING_DESTINATION_ONLY"):
+    with pytest.raises(PermissionError, match="PM_DESTINATION_NOT_ALLOWLISTED"):
         coordinator.export_verified_pm(
             backend_sheets=object(), output_sheets=None,
             v2_result={"action": "DUPLICATE_VERSION", "document_key": DOC,
