@@ -162,3 +162,39 @@ def verified_completion_fallback(alerts, route_result):
             "Export ID: " + str(proof["export_id"])
         ),
     }
+
+
+def verified_identical_upload_ack(
+    *,
+    file_id,
+    sha256,
+    previous_file,
+    matching_file,
+    route_result,
+):
+    """Build acknowledgment only for a distinct known-content Drive file."""
+    proof = (route_result or {}).get("pm_export_result")
+
+    if (
+        previous_file is not None
+        or matching_file is None
+        or str(matching_file.file_id) == str(file_id)
+        or str(matching_file.sha256).lower() != str(sha256).lower()
+        or not isinstance(proof, dict)
+        or proof.get("verified") is not True
+        or not str(proof.get("export_id") or "").strip()
+    ):
+        return None
+
+    return {
+        "code": "IDENTICAL_UPLOAD_ACKNOWLEDGED",
+        "severity": "INFO",
+        "audience": ["PM"],
+        "message": (
+            "A new PDF file was received and checked. "
+            "Its content matches a previously recorded version. "
+            "The corresponding PM export was verified; "
+            "existing review results remain available. "
+            "Export ID: " + str(proof["export_id"])
+        ),
+    }

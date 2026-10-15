@@ -16,6 +16,7 @@ from notifier import notify_alert
 from v2_pipeline_notifications import (
     dispatch_pipeline_alert,
     verified_completion_fallback,
+    verified_identical_upload_ack,
 )
 from drive_adapter import DriveAdapter
 from extractor import (
@@ -569,6 +570,18 @@ def process_drive_folder(
                     if route_result[
                         "duplicate"
                     ]:
+                        # Evaluate against the registry loaded before
+                        # this Drive file was registered.
+                        duplicate_ack = verified_identical_upload_ack(
+                            file_id=f.file_id,
+                            sha256=summary.get("sha256", ""),
+                            previous_file=by_id.get(f.file_id),
+                            matching_file=by_sha256.get(
+                                str(summary.get("sha256", ""))
+                            ),
+                            route_result=route_result,
+                        )
+
                         duplicate_entry = (
                             registry_entry_for_processed_pdf(
                                 f,
@@ -595,12 +608,46 @@ def process_drive_folder(
                             or {}
                         )
 
+                        duplicate_alerts = []
+
+                        if duplicate_ack is not None:
+                            duplicate_alerts.append(duplicate_ack)
+
+                            try:
+                                notification_result = (
+                                    dispatch_pipeline_alert(
+                                        alert=duplicate_ack,
+                                        file_meta=f,
+                                        sheets=backend_sheets,
+                                        status="PROCESSED",
+                                        verified_export_required=(
+                                            require_verified_pm_export
+                                        ),
+                                        summary=summary,
+                                        export_result=route_result.get(
+                                            "pm_export_result"
+                                        ),
+                                    )
+                                )
+                                print(
+                                    "DUPLICATE UPLOAD NOTIFICATION: "
+                                    f"{notification_result}"
+                                )
+                            except Exception as notification_exc:
+                                print(
+                                    "WARNING: duplicate upload "
+                                    "acknowledgment failed: "
+                                    f"{type(notification_exc).__name__}: "
+                                    f"{notification_exc}"
+                                )
+
                         results.append(
                             {
                                 "file_id":
                                     f.file_id,
                                 "name":
                                     f.name,
+                                "alerts": duplicate_alerts,
                                 "action":
                                     "DUPLICATE_VERSION",
                                 "reason":
