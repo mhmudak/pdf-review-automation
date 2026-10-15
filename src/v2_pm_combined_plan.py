@@ -214,12 +214,53 @@ def plan_verified_pm_cells(
         + reply_cells["cell_update_candidates"]
     )
 
-    cells = [item["cell"] for item in candidates]
+    # Normalize the contract consumed by the guarded writer.
+    # Derive the writable field from the authorized PM column,
+    # never from an untrusted source-supplied field label.
+    import re
+
+    allowed_fields = {
+        "E": "Comment",
+        "F": "Reply 1",
+        "G": "Reply 2",
+        "H": "Reply 3",
+        "V": "Reply Entry IDs",
+    }
+
+    normalized = []
+
+    for candidate in candidates:
+        item = dict(candidate)
+        cell = str(item.get("cell", ""))
+        match = re.fullmatch(r"([A-Z]+)([2-9][0-9]*)", cell)
+
+        if not match or match.group(1) not in allowed_fields:
+            raise ValueError(
+                f"Unauthorized PM candidate cell: {cell!r}"
+            )
+
+        field = allowed_fields[match.group(1)]
+        existing_field = item.get("field")
+
+        if existing_field is not None and existing_field != field:
+            raise ValueError("PM candidate field/cell mismatch")
+
+        for required in (
+            "root_entry_id", "expected_value", "new_value"
+        ):
+            if required not in item:
+                raise ValueError(
+                    f"PM candidate missing {required}"
+                )
+
+        item["field"] = field
+        normalized.append(item)
+
+    cells = [item["cell"] for item in normalized]
     if len(cells) != len(set(cells)):
         raise ValueError("Duplicate planned PM cell")
 
-    if blockers:
-        candidates = []
+    candidates = [] if blockers else normalized
 
     return {
         "mode": "DRY_RUN",

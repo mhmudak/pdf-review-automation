@@ -205,3 +205,48 @@ def test_reply_id_conflict_remains_blocked():
     )
     assert result["blockers"]
     assert result["cell_update_candidates"] == []
+
+
+def test_comment_candidate_has_complete_writer_contract():
+    result = run(
+        pm(),
+        source(),
+        source(comment="Revised"),
+    )
+    assert result["blockers"] == []
+    assert len(result["cell_update_candidates"]) == 1
+
+    item = result["cell_update_candidates"][0]
+
+    assert item["field"] == "Comment"
+    assert item["cell"] == "E2"
+    assert item["root_entry_id"] == ROOT
+    assert item["expected_value"] == "Original"
+    assert item["new_value"] == "Revised"
+
+
+def test_reply_candidates_have_authorized_fields():
+    before = source(
+        replies=("Old reply",),
+        ids="reply-a",
+    )
+    after = source(
+        replies=("Old reply", "New reply"),
+        ids="reply-a | reply-b",
+    )
+    result = run(
+        pm(replies=("Old reply",), ids="reply-a"),
+        before,
+        after,
+    )
+    assert result["blockers"] == []
+
+    fields = {
+        item["cell"]: item["field"]
+        for item in result["cell_update_candidates"]
+    }
+
+    assert fields == {
+        "G2": "Reply 2",
+        "V2": "Reply Entry IDs",
+    }
