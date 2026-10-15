@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from typing import Any
 
 from sheets_adapter import SheetsAdapter
@@ -34,6 +35,7 @@ from v2_pm_checkpoint_store import deserialize_checkpoint
 
 
 STAGING_ID = "1X4NN9gnvQdXc65cPk9B-p2W-yiBlqZ2rcg8U-ujd2N4"
+PRODUCTION_ID = "13f31vlPWQPWrt2auGukJA7oWrM-90Kp6yU8OhWT3ERE"
 PM_TAB = "Trial PDF - All Data"
 INITIAL_BASELINE = "_PM_Source_Baseline_V2"
 
@@ -42,6 +44,45 @@ SOURCE_HEADERS = [
     "Reply 3", "Reply Entry IDs", "Source Row Digest",
     "Snapshot ID",
 ]
+
+
+
+def export_destination(config):
+    """Explicit allowlist. Production requires separate config and runtime consent.
+
+    Authorization is checked before creating a SheetsAdapter or accessing data.
+    An empty environment value is NEVER equivalent to authorization.
+    """
+    destination = clean(config.get("v2_pm_output_spreadsheet_id")).strip()
+    tab = clean(config.get("v2_pm_output_tab")).strip()
+    if tab != PM_TAB:
+        raise PermissionError("PM_TAB_NOT_AUTHORIZED")
+    if destination == STAGING_ID:
+        if config.get("v2_pm_staging_apply") is not True:
+            raise PermissionError("V2_PM_STAGING_APPLY_NOT_AUTHORIZED")
+    elif destination == PRODUCTION_ID:
+        if config.get("v2_pm_production_apply") is not True or os.environ.get(
+            "V2_PM_PRODUCTION_AUTHORIZED", ""
+        ) != "YES_I_AUTHORIZE_PRODUCTION_PM_WRITES":
+            raise PermissionError("PRODUCTION_PM_EXPLICIT_APPROVAL_REQUIRED")
+        if os.environ.get("NOTIFICATIONS_ENABLED", "").lower() in (
+            "true", "1", "yes", "on",
+        ):
+            raise PermissionError("PRODUCTION_PM_NOTIFICATIONS_REQUIRE_SEPARATE_RELEASE")
+    else:
+        raise PermissionError("PM_DESTINATION_NOT_ALLOWLISTED")
+    return destination
+
+
+def require_destination_bootstrap(adapter, destination):
+    """Production must have a complete, digest-verified source baseline.
+
+    Never bootstrap or modify production baseline implicitly. A separate,
+    reviewed baseline provisioning procedure is needed first.
+    """
+    if destination == PRODUCTION_ID:
+        read_source_snapshot(adapter, INITIAL_BASELINE)
+        read_checkpoint_table(adapter)
 
 
 def canonical(value):
@@ -108,8 +149,6 @@ def read_pm_grid(adapter, tab):
     full = read_values(adapter, tab, pm_column_letter(width))
     if not full or list(full[0][:22]) != list(PM_HEADER_SEQUENCE):
         raise RuntimeError("PM_OUTPUT_SCHEMA_CONFLICT")
-    # Google Sheets omits empty trailing cells from returned rows.
-    # Validate all physically existing columns, including blank W1.
     trailing = list(full[0][22:width])
     trailing.extend([""] * (width - 22 - len(trailing)))
     if any(not str(h).strip() for h in trailing):
@@ -458,15 +497,7 @@ def export_verified_pm(
     Fail closed unless explicitly enabled for staging.
     """
 
-    if config.get("v2_pm_staging_apply") is not True:
-        raise RuntimeError("V2_PM_STAGING_APPLY_NOT_AUTHORIZED")
-
-    if (
-        config.get("v2_pm_output_spreadsheet_id")
-        != STAGING_ID
-        or config.get("v2_pm_output_tab") != PM_TAB
-    ):
-        raise PermissionError("STAGING_DESTINATION_ONLY")
+    destination = export_destination(config)
 
     if backend_sheets is None:
         raise RuntimeError("BACKEND_REQUIRED")
@@ -478,6 +509,9 @@ def export_verified_pm(
     if not document or not version or len(sha) != 64:
         raise RuntimeError("INVALID_V2_VERSION_IDENTITY")
 
+    output_adapter = SheetsAdapter(destination)
+    require_destination_bootstrap(output_adapter, destination)
+
     # A known, unchanged V2 version has already gone through
     # annotation/author-rule checks in execute_v2_pdf. Reuse
     # only the *latest* completed checkpoint: do not project,
@@ -485,7 +519,7 @@ def export_verified_pm(
     # Any pending, changed, or missing checkpoint falls through
     # to the full verified export and recovery logic.
     if v2_result.get("action") == "DUPLICATE_VERSION":
-        checkpoint_adapter = SheetsAdapter(STAGING_ID)
+        checkpoint_adapter = output_adapter
         known_history = [
             deserialize_checkpoint(row)
             for row in read_checkpoint_table(checkpoint_adapter)
@@ -493,7 +527,7 @@ def export_verified_pm(
         known_history = [
             item for item in known_history
             if item["document_key"] == document
-            and item["output_spreadsheet_id"] == STAGING_ID
+            and item["output_spreadsheet_id"] == destination
             and item["output_tab"] == PM_TAB
         ]
         if known_history:
@@ -536,7 +570,7 @@ def export_verified_pm(
     if not current:
         raise RuntimeError("EMPTY_V2_PROJECTION")
 
-    staging = SheetsAdapter(STAGING_ID)
+    staging = output_adapter
 
     pm_values = read_pm_grid(staging, PM_TAB)
     if not pm_values or pm_values[0] != PM_HEADER_SEQUENCE:
@@ -551,7 +585,7 @@ def export_verified_pm(
         row for row in history
         if (
             row["document_key"] == document
-            and row["output_spreadsheet_id"] == STAGING_ID
+            and row["output_spreadsheet_id"] == destination
             and row["output_tab"] == PM_TAB
         )
     ]
@@ -602,7 +636,7 @@ def export_verified_pm(
             document_key=document,
             version_id=version,
             pdf_sha256=sha,
-            output_spreadsheet_id=STAGING_ID,
+            output_spreadsheet_id=destination,
             output_tab=PM_TAB,
             previous_exported_version_id=previous_version,
         )
@@ -653,8 +687,8 @@ def export_verified_pm(
         ))
 
     writer = GuardedPMWriter(
-        staging.service, STAGING_ID, PM_TAB,
-        authorized_spreadsheet_id=STAGING_ID,
+        staging.service, destination, PM_TAB,
+        authorized_spreadsheet_id=destination,
         authorized_tab=PM_TAB,
     )
 
@@ -676,8 +710,8 @@ def export_verified_pm(
             raise RuntimeError("PM_CELL_WRITE_UNVERIFIED")
 
         root_appender = GuardedRootAppender(
-            staging.service, STAGING_ID, PM_TAB,
-            authorized_spreadsheet_id=STAGING_ID,
+            staging.service, destination, PM_TAB,
+            authorized_spreadsheet_id=destination,
             authorized_tab=PM_TAB,
         )
 
@@ -794,17 +828,13 @@ def recover_pending_pm_exports(*, backend_sheets, config):
     Uses already persisted backend records. No PDF extraction.
     Never authorizes a production destination.
     """
-    if (
-        config.get("v2_pm_staging_apply") is not True
-        or config.get("v2_pm_output_spreadsheet_id") != STAGING_ID
-        or config.get("v2_pm_output_tab") != PM_TAB
-    ):
-        raise PermissionError("RECOVERY_STAGING_ONLY")
+    destination = export_destination(config)
 
     if backend_sheets is None:
         raise RuntimeError("RECOVERY_BACKEND_REQUIRED")
 
-    staging = SheetsAdapter(STAGING_ID)
+    staging = SheetsAdapter(destination)
+    require_destination_bootstrap(staging, destination)
 
     all_checkpoints = [
         deserialize_checkpoint(row)
@@ -815,7 +845,7 @@ def recover_pending_pm_exports(*, backend_sheets, config):
         checkpoint
         for checkpoint in all_checkpoints
         if (
-            checkpoint["output_spreadsheet_id"] == STAGING_ID
+            checkpoint["output_spreadsheet_id"] == destination
             and checkpoint["output_tab"] == PM_TAB
             and checkpoint["state"] != "COMPLETED"
         )
@@ -890,7 +920,7 @@ def recover_pending_pm_exports(*, backend_sheets, config):
     still_pending = [
         x for x in remaining
         if (
-            x["output_spreadsheet_id"] == STAGING_ID
+            x["output_spreadsheet_id"] == destination
             and x["output_tab"] == PM_TAB
             and x["state"] != "COMPLETED"
         )

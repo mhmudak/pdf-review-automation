@@ -21,11 +21,20 @@ def ensure_v2_runtime_safety(*, v2_enabled, dry_run, config, output_spreadsheet_
     notifications_on = os.environ.get("NOTIFICATIONS_ENABLED", "").strip().lower() in {"true", "1", "yes", "on"}
     notification_mode = os.environ.get("NOTIFICATION_MODE", "OFF").strip().upper()
 
-    if destination == PRODUCTION_PM_ID:
-        raise PermissionError("PRODUCTION_PM_DESTINATION_NOT_AUTHORIZED_IN_THIS_RELEASE")
+    production = destination == PRODUCTION_PM_ID
+    if production and not (
+        config.get("v2_pm_production_apply") is True
+        and os.environ.get("V2_PM_PRODUCTION_AUTHORIZED", "")
+        == "YES_I_AUTHORIZE_PRODUCTION_PM_WRITES"
+    ):
+        raise PermissionError("PRODUCTION_PM_DESTINATION_NOT_AUTHORIZED_IN_THIS_RELEASE: EXPLICIT_APPROVAL_REQUIRED")
 
-    if require_export and (destination != STAGING_PM_ID or tab != PM_TAB):
-        raise PermissionError("VERIFIED_EXPORT_DESTINATION_NOT_STAGING")
+    if require_export and (destination not in {STAGING_PM_ID, PRODUCTION_PM_ID} or tab != PM_TAB):
+        raise PermissionError("VERIFIED_EXPORT_DESTINATION_NOT_STAGING_OR_APPROVED_PRODUCTION")
+    if production and not require_export:
+        raise PermissionError("PRODUCTION_REQUIRES_VERIFIED_EXPORT")
+    if production and notifications_on:
+        raise PermissionError("PRODUCTION_PM_NOTIFICATIONS_REQUIRE_SEPARATE_RELEASE")
 
     if not dry_run and notifications_on:
         if not require_export:
