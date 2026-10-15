@@ -1,0 +1,111 @@
+"""Durable notification bridge for V2 pipeline alerts.
+
+No automatic retries of uncertain SMTP delivery.
+No email or Sheets access when notifications are disabled.
+"""
+
+import os
+
+from notifier import (
+    notification_mode,
+    notifications_enabled,
+    send_email,
+)
+from v2_notification_policy import event_key
+from v2_notification_dispatcher import dispatch_notification
+
+
+def dispatch_pipeline_alert(
+    *,
+    alert,
+    file_meta,
+    sheets,
+    status,
+    verified_export_required,
+    summary=None,
+    error="",
+    sender=None,
+):
+    """Dispatch one V2 alert with a stable event identity."""
+
+    if not notifications_enabled():
+        return {"action": "NOTIFICATIONS_DISABLED", "sent": False}
+
+    status = str(status).upper()
+    if status not in {"PROCESSED", "ERROR"}:
+        raise ValueError("UNSUPPORTED_PIPELINE_NOTIFICATION_STATUS")
+
+    if status == "PROCESSED" and verified_export_required is not True:
+        return {
+            "action": "UNVERIFIED_V2_SUCCESS_BLOCKED",
+            "sent": False,
+        }
+
+    if sheets is None:
+        raise RuntimeError("NOTIFICATION_LEDGER_UNAVAILABLE")
+
+    summary = summary or {}
+    file_id = str(file_meta.file_id)
+    modified = str(file_meta.modified_time)
+    size = str(file_meta.size)
+    digest = str(summary.get("sha256") or "")
+    code = str(alert.get("code") or status)
+
+    # A repeated Scheduler run must not create a new email.
+    # A changed Drive observation or changed failure can create
+    # a different event, subject to the normal verification rules.
+    event_identity = "\x1f".join((
+        file_id, modified, size, digest, status, code,
+        str(error) if status == "ERROR" else "",
+    ))
+
+    key = event_key(
+        file_id,
+        "PIPELINE_" + status + "_" + code,
+        event_identity,
+    )
+
+    audiences = [
+        str(value).upper()
+        for value in alert.get("audience", [])
+    ]
+
+    if status == "ERROR":
+        audience = ["ADMIN"]
+    elif "PM" in audiences:
+        audience = ["PM"]
+    elif "ADMIN" in audiences:
+        audience = ["ADMIN"]
+    else:
+        # Do not invent a notification recipient.
+        return {"action": "NO_ALERT_AUDIENCE", "sent": False}
+
+    mode = notification_mode()
+
+    intent = {
+        "notify": True,
+        "key": key,
+        "kind": "PIPELINE_" + status + "_" + code,
+        "audience": audience,
+        "severity": str(alert.get("severity") or "INFO"),
+        "document_key": file_id,
+        "message": (
+            "PDF: " + str(file_meta.name) + "\n\n"
+            + str(alert.get("message") or "")
+            + ("\n\nError: " + str(error) if error else "")
+        ),
+    }
+
+    return dispatch_notification(
+        sheets=sheets,
+        intent=intent,
+        mode=mode,
+        admin_email=os.getenv("ADMIN_EMAIL", ""),
+        pm_email=os.getenv("PM_EMAIL", ""),
+        pm_final_test_authorized=(
+            os.getenv("PM_FINAL_TEST_AUTHORIZED", "")
+            .strip().lower() in {"1", "true", "yes"}
+        ),
+        send_email_fn=sender or send_email,
+        allow_writes=True,
+    )

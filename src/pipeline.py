@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from alerts import classify_pdf_result
 from notifier import notify_alert
+from v2_pipeline_notifications import dispatch_pipeline_alert
 from drive_adapter import DriveAdapter
 from extractor import (
     assess_master_compatibility,
@@ -672,9 +673,17 @@ def process_drive_folder(
 
                     try:
                         notification_result = (
-                            notify_alert(
-                                alert
-                            )
+                            (
+    dispatch_pipeline_alert(
+        alert=alert,
+        file_meta=f,
+        sheets=backend_sheets,
+        status="PROCESSED",
+        verified_export_required=require_verified_pm_export,
+        summary=summary,
+    )
+    if v2_enabled else notify_alert(alert)
+)
                         )
 
                         print(
@@ -774,9 +783,17 @@ def process_drive_folder(
 
                     try:
                         notification_result = (
-                            notify_alert(
-                                alert
-                            )
+                            (
+    dispatch_pipeline_alert(
+        alert=alert,
+        file_meta=f,
+        sheets=backend_sheets,
+        status="ERROR",
+        verified_export_required=require_verified_pm_export,
+        error=str(exc),
+    )
+    if v2_enabled else notify_alert(alert)
+)
                         )
 
                         print(
