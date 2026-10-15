@@ -50,6 +50,7 @@ from historical_authors import (
     load_historical_author_map,
 )
 from v2_backend import ensure_v2_backend
+from v2_release_gate import ensure_v2_runtime_safety
 
 
 load_dotenv()
@@ -88,8 +89,6 @@ def process_drive_folder(
     dry_run: bool = False,
 ) -> dict[str, Any]:
 
-    drive = DriveAdapter()
-
     config = load_config(config_path)
 
     v2_enabled = bool_env(
@@ -102,6 +101,14 @@ def process_drive_folder(
         and config.get("v2_require_verified_pm_export") is True
     )
 
+    # Run before Drive initialization/API requests or any backend write.
+    ensure_v2_runtime_safety(
+        v2_enabled=v2_enabled,
+        dry_run=dry_run,
+        config=config,
+        output_spreadsheet_id=output_spreadsheet_id,
+    )
+
     v2_pm_exporter = None
 
     if require_verified_pm_export:
@@ -109,6 +116,8 @@ def process_drive_folder(
         # Missing/incomplete coordinator must fail closed.
         from v2_pm_export_coordinator import export_verified_pm
         v2_pm_exporter = export_verified_pm
+
+    drive = DriveAdapter()
 
     historical_author_by_entry_id = (
         load_historical_author_map(config)
