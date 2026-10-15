@@ -357,6 +357,8 @@ def process_drive_folder(
 
         for f in files_needing_processing:
 
+            route_result = None
+
             run_id = str(uuid.uuid4())
 
             local_pdf = (
@@ -681,6 +683,9 @@ def process_drive_folder(
         status="PROCESSED",
         verified_export_required=require_verified_pm_export,
         summary=summary,
+        export_result=(
+            (route_result or {}).get("pm_export_result")
+        ),
     )
     if v2_enabled else notify_alert(alert)
 )

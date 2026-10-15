@@ -47,6 +47,10 @@ def deliver(sheets, sender, **kwargs):
         status="PROCESSED",
         verified_export_required=True,
         summary={"sha256": "a" * 64},
+        export_result={
+            "verified": True,
+            "export_id": "verified-test-export-001",
+        },
         sender=sender,
         **kwargs,
     )
@@ -153,3 +157,51 @@ def test_uncertain_send_is_not_retried(monkeypatch):
     result = deliver(sheets, fail)
     assert result["action"] == "DELIVERY_REVIEW_REQUIRED"
     assert len(calls) == 1
+
+
+def test_config_flag_alone_cannot_authorize_success(monkeypatch):
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "true")
+    monkeypatch.setenv("NOTIFICATION_MODE", "TEST")
+    monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
+
+    sent = []
+    sheets = FakeSheets()
+
+    result = bridge.dispatch_pipeline_alert(
+        alert=ALERT,
+        file_meta=FILE,
+        sheets=sheets,
+        status="PROCESSED",
+        verified_export_required=True,
+        summary={"sha256": "a" * 64},
+        export_result=None,
+        sender=lambda *args: sent.append(args),
+    )
+
+    assert result["action"] == "UNVERIFIED_V2_SUCCESS_BLOCKED"
+    assert sent == []
+    assert len(sheets.rows) == 1
+
+
+def test_unverified_export_id_cannot_authorize_success(monkeypatch):
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "true")
+    monkeypatch.setenv("NOTIFICATION_MODE", "TEST")
+    monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
+
+    sent = []
+    result = bridge.dispatch_pipeline_alert(
+        alert=ALERT,
+        file_meta=FILE,
+        sheets=FakeSheets(),
+        status="PROCESSED",
+        verified_export_required=True,
+        summary={"sha256": "a" * 64},
+        export_result={
+            "verified": False,
+            "export_id": "export-unverified",
+        },
+        sender=lambda *args: sent.append(args),
+    )
+
+    assert result["action"] == "UNVERIFIED_V2_SUCCESS_BLOCKED"
+    assert sent == []

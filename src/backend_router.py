@@ -166,6 +166,7 @@ def synchronize_processed_pdf(
 
         return {
             "mode": "V2",
+            "pm_export_result": pm_export_result,
             "sync_stats": sync_stats,
             "duplicate": duplicate,
             "v2_result": v2_result,

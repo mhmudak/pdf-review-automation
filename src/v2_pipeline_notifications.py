@@ -23,6 +23,7 @@ def dispatch_pipeline_alert(
     status,
     verified_export_required,
     summary=None,
+    export_result=None,
     error="",
     sender=None,
 ):
@@ -35,11 +36,19 @@ def dispatch_pipeline_alert(
     if status not in {"PROCESSED", "ERROR"}:
         raise ValueError("UNSUPPORTED_PIPELINE_NOTIFICATION_STATUS")
 
-    if status == "PROCESSED" and verified_export_required is not True:
-        return {
-            "action": "UNVERIFIED_V2_SUCCESS_BLOCKED",
-            "sent": False,
-        }
+    if status == "PROCESSED":
+        proof = export_result or {}
+
+        if (
+            verified_export_required is not True
+            or not isinstance(proof, dict)
+            or proof.get("verified") is not True
+            or not str(proof.get("export_id") or "").strip()
+        ):
+            return {
+                "action": "UNVERIFIED_V2_SUCCESS_BLOCKED",
+                "sent": False,
+            }
 
     if sheets is None:
         raise RuntimeError("NOTIFICATION_LEDGER_UNAVAILABLE")
@@ -54,8 +63,14 @@ def dispatch_pipeline_alert(
     # A repeated Scheduler run must not create a new email.
     # A changed Drive observation or changed failure can create
     # a different event, subject to the normal verification rules.
+    export_id = (
+        str(export_result["export_id"]).strip()
+        if status == "PROCESSED" else ""
+    )
+
     event_identity = "\x1f".join((
         file_id, modified, size, digest, status, code,
+        export_id,
         str(error) if status == "ERROR" else "",
     ))
 
