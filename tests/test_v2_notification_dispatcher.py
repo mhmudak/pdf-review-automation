@@ -192,7 +192,7 @@ def test_final_pm_delivery_when_authorized():
     )
 
     assert result["action"] == "SENT"
-    assert email.calls[0][0] == ["pm@example.com"]
+    assert email.calls[0][0] == ["pm@example.com", "admin@example.com"]
     assert email.calls[0][1].startswith("[FINAL TEST]")
 
 

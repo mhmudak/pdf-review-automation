@@ -149,19 +149,28 @@ def delivery_plan(
         raise RuntimeError("PM_FINAL_TEST_NOT_AUTHORIZED")
 
     recipient_name = intent["audience"][0]
-    recipient = (
-        str(admin_email).strip()
-        if recipient_name == "ADMIN"
-        else str(pm_email).strip()
-    )
-    if not recipient:
-        raise RuntimeError(
-            recipient_name + "_EMAIL_NOT_CONFIGURED"
-        )
+    admin = str(admin_email).strip()
+    pm = str(pm_email).strip()
+    if recipient_name == "ADMIN":
+        if not admin:
+            raise RuntimeError("ADMIN_EMAIL_NOT_CONFIGURED")
+        recipients = [admin]
+    elif recipient_name == "PM":
+        # Both recipients are part of one durable SMTP event.
+        # The first recipient is the PM; avoid duplicate addresses.
+        if not pm:
+            raise RuntimeError("PM_EMAIL_NOT_CONFIGURED")
+        if not admin:
+            raise RuntimeError("ADMIN_EMAIL_NOT_CONFIGURED")
+        recipients = [pm]
+        if admin.casefold() != pm.casefold():
+            recipients.append(admin)
+    else:
+        raise RuntimeError("UNKNOWN_NOTIFICATION_AUDIENCE")
 
     return {
         "send": True,
-        "recipients": [recipient],
+        "recipients": recipients,
         "subject_prefix": (
             "[FINAL TEST]" if mode == "FINAL" else ""
         ),

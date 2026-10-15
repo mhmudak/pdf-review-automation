@@ -59,16 +59,19 @@ def dispatch_notification(
         raise RuntimeError("NOTIFICATION_SENDER_NOT_CONFIGURED")
 
     recipients = plan["recipients"]
-    if len(recipients) != 1:
-        raise RuntimeError("ONE_RECIPIENT_REQUIRED")
+    if not recipients or len(recipients) > 2:
+        raise RuntimeError("INVALID_NOTIFICATION_RECIPIENTS")
 
+    # Persist the entire recipient set as an immutable delivery identity.
+    # Never mutate an existing event when configuration changes.
+    recipient_identity = " | ".join(recipients)
     key = plan["key"]
     record = create_pending(
         sheets,
         key=key,
         document_key=intent["document_key"],
         kind=intent["kind"],
-        recipient=recipients[0],
+        recipient=recipient_identity,
         allow_writes=True,
     )
 

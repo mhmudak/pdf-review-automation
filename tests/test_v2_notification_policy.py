@@ -79,9 +79,10 @@ def test_final_mode_requires_explicit_authorization():
         intent(),
         mode="FINAL",
         pm_email="pm@example.com",
+        admin_email="admin@example.com",
         pm_final_test_authorized=True,
     )
-    assert result["recipients"] == ["pm@example.com"]
+    assert result["recipients"] == ["pm@example.com", "admin@example.com"]
     assert result["subject_prefix"] == "[FINAL TEST]"
 
 
