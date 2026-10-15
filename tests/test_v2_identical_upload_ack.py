@@ -7,7 +7,7 @@ SHA = "a" * 64
 
 
 def existing():
-    return SimpleNamespace(file_id="old-drive-id", sha256=SHA)
+    return SimpleNamespace(file_id="old-drive-id", sha256=SHA, status="PROCESSED")
 
 
 def route(verified=True, export_id="export-001"):
@@ -47,7 +47,7 @@ def test_unknown_content_cannot_create_identical_ack():
 
 def test_same_file_id_not_treated_as_new_upload():
     matching = SimpleNamespace(
-        file_id="new-drive-id", sha256=SHA
+        file_id="new-drive-id", sha256=SHA, status="PROCESSED"
     )
     assert decide(matching_file=matching) is None
 

@@ -757,6 +757,31 @@ def process_drive_folder(
                             f"{notification_exc}"
                         )
 
+                # Explicit verified completion if classification
+                # produced no PM-facing alert. No dry-run sends.
+                if v2_enabled and not dry_run and require_verified_pm_export:
+                    completion = verified_completion_fallback(
+                        alerts, route_result
+                    )
+                    if completion is not None:
+                        alerts.append(completion)
+                        try:
+                            dispatch_pipeline_alert(
+                                alert=completion,
+                                file_meta=f,
+                                sheets=backend_sheets,
+                                status="PROCESSED",
+                                verified_export_required=True,
+                                summary=summary,
+                                export_result=route_result.get("pm_export_result"),
+                            )
+                        except Exception as notification_exc:
+                            print(
+                                "WARNING: verified completion email: "
+                                f"{type(notification_exc).__name__}: "
+                                f"{notification_exc}"
+                            )
+
                 results.append(
                     {
                         "file_id": f.file_id,

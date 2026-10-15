@@ -180,6 +180,8 @@ def verified_identical_upload_ack(
         or matching_file is None
         or str(matching_file.file_id) == str(file_id)
         or str(matching_file.sha256).lower() != str(sha256).lower()
+        or str(getattr(matching_file, "status", "")).upper()
+            not in {"PROCESSED", "DUPLICATE"}
         or not isinstance(proof, dict)
         or proof.get("verified") is not True
         or not str(proof.get("export_id") or "").strip()

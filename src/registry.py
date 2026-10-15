@@ -57,7 +57,10 @@ def build_registry(
 
         by_id[file_id] = entry
 
-        if entry.sha256:
+        if (
+            entry.sha256
+            and entry.status.strip().upper() in {"PROCESSED", "DUPLICATE"}
+        ):
             by_sha256[entry.sha256] = entry
 
     return by_id, by_sha256

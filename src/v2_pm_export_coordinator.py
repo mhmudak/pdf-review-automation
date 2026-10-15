@@ -420,6 +420,42 @@ def export_verified_pm(
     if not document or not version or len(sha) != 64:
         raise RuntimeError("INVALID_V2_VERSION_IDENTITY")
 
+    # A known, unchanged V2 version has already gone through
+    # annotation/author-rule checks in execute_v2_pdf. Reuse
+    # only the *latest* completed checkpoint: do not project,
+    # read PM cells, or export identical content again.
+    # Any pending, changed, or missing checkpoint falls through
+    # to the full verified export and recovery logic.
+    if v2_result.get("action") == "DUPLICATE_VERSION":
+        checkpoint_adapter = SheetsAdapter(STAGING_ID)
+        known_history = [
+            deserialize_checkpoint(row)
+            for row in read_checkpoint_table(checkpoint_adapter)
+        ]
+        known_history = [
+            item for item in known_history
+            if item["document_key"] == document
+            and item["output_spreadsheet_id"] == STAGING_ID
+            and item["output_tab"] == PM_TAB
+        ]
+        if known_history:
+            latest_known = known_history[-1]
+            if (
+                latest_known["state"] == "COMPLETED"
+                and latest_known["version_id"] == version
+                and latest_known["pdf_sha256"] == sha
+                and latest_known["verified_projection_digest"]
+            ):
+                return {
+                    "verified": True,
+                    "action": "ALREADY_EXPORTED",
+                    "export_id": latest_known["export_id"],
+                    "verified_projection_digest": (
+                        latest_known["verified_projection_digest"]
+                    ),
+                    "reused_completed_checkpoint": True,
+                }
+
     # The caller supplies a persisted V2 backend.
     values = backend_sheets.get_all_values(
         "_Entries_V2", refresh=True
