@@ -144,6 +144,17 @@ def read_source_snapshot(adapter, tab):
     ]
 
 
+def verify_full_pm_destination(adapter, expected_projection):
+    """Verify complete PM source-owned state after export.
+
+    Ignore human-owned categories and historical reply display
+    differences, but never ignore ROOT IDs, source comments or
+    ordered reply IDs.
+    """
+    latest = read_values(adapter, PM_TAB, "V")
+    return verify_unchanged_pm(latest, expected_projection)
+
+
 def snapshot_tab(export_id):
     return "_PM_Source_" + export_id[:20]
 
@@ -458,6 +469,10 @@ def export_verified_pm(
         if not result["verified"]:
             raise RuntimeError("PM_CELL_WRITE_UNVERIFIED")
 
+        # Never certify an export based only on changed cells.
+        # Re-read and verify the entire PM source-owned state.
+        verify_full_pm_destination(staging, current)
+
         # The new snapshot is immutable and read-back verified
         # BEFORE the export can be marked as verified.
         verified_digest = persist_immutable_snapshot(
@@ -480,6 +495,10 @@ def export_verified_pm(
         )
         if verified_digest != checkpoint["verified_projection_digest"]:
             raise RuntimeError("VERIFIED_SNAPSHOT_DIGEST_CONFLICT")
+
+        # Recheck the whole PM destination, including ROOT IDs
+        # and reply IDs, before checkpoint completion.
+        verify_full_pm_destination(staging, current)
 
         # Recheck authorized PM cell values before completion.
         for change in changes:
