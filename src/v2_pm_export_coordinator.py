@@ -18,6 +18,8 @@ from sheets_adapter import SheetsAdapter
 from v2_output_projection import project_backend_rows
 from v2_pm_cell_plan import PM_HEADER_SEQUENCE
 from v2_pm_combined_plan import plan_verified_pm_cells
+from v2_pm_staging_snapshot import new_root_row
+from v2_pm_root_writer import GuardedRootAppender
 from v2_pm_safe_writer import GuardedPMWriter, CellChange
 from v2_pm_checkpoint import (
     new_export_checkpoint,
@@ -275,6 +277,114 @@ def verify_unchanged_pm(pm_values, source_rows):
 
     return len(expected)
 
+
+def prepare_new_root_insertions(
+    pm_values, previous_projection, current_projection,
+    backend_records,
+):
+    """Plan new ROOTs without modifying Google Sheets.
+
+    Already-appended rows are verified for exact equality.
+    Existing ROOTs remain in their original physical positions.
+    """
+    if not pm_values or pm_values[0] != PM_HEADER_SEQUENCE:
+        raise RuntimeError("PM_OUTPUT_SCHEMA_CONFLICT")
+
+    def index_projection(rows, label):
+        indexed = {}
+        for row in rows:
+            key = clean(row.get("Root Entry ID")).strip()
+            if not key or key in indexed:
+                raise RuntimeError(label + "_ROOT_ID_CONFLICT")
+            indexed[key] = row
+        return indexed
+
+    before = index_projection(previous_projection, "PREVIOUS")
+    after = index_projection(current_projection, "CURRENT")
+
+    # Removal of an existing source ROOT requires a separate,
+    # human-reviewed policy; never silently remove PM rows.
+    missing = set(before) - set(after)
+    if missing:
+        raise RuntimeError("SOURCE_ROOT_REMOVAL_REQUIRES_REVIEW")
+
+    pm_rows = {}
+    for raw in pm_values[1:]:
+        row = pad(raw, 22)
+        key = row[14].strip()
+        if not key or key in pm_rows:
+            raise RuntimeError("PM_ROOT_ID_CONFLICT")
+        pm_rows[key] = row
+
+    new_ids = set(after) - set(before)
+
+    if set(pm_rows) - set(before) - new_ids:
+        raise RuntimeError("UNEXPECTED_PM_ROOT_ID")
+
+    if set(before) - set(pm_rows):
+        raise RuntimeError("PREVIOUS_PM_ROOT_MISSING")
+
+    backend_roots = {}
+    for record in backend_records:
+        if (
+            clean(record.get("Relation Type")).strip().upper()
+            == "ROOT"
+            and clean(record.get("Active")).strip().upper()
+            == "TRUE"
+        ):
+            entry_id = clean(record.get("Entry ID")).strip()
+            if not entry_id or entry_id in backend_roots:
+                raise RuntimeError("BACKEND_ROOT_ID_CONFLICT")
+            backend_roots[entry_id] = record
+
+    additions = []
+    already_present = []
+
+    # Use the current projection's deterministic reading order.
+    for projected in current_projection:
+        key = clean(projected["Root Entry ID"]).strip()
+        if key not in new_ids:
+            continue
+
+        backend = backend_roots.get(key)
+        if backend is None:
+            raise RuntimeError("NEW_ROOT_BACKEND_RECORD_MISSING")
+
+        row = new_root_row(projected, backend)
+
+        if key in pm_rows:
+            # Recovery after append: no second insertion.
+            # A mismatching row is never overwritten.
+            if pm_rows[key] != row:
+                raise RuntimeError("APPENDED_ROOT_CONTENT_CONFLICT")
+            already_present.append(key)
+        else:
+            additions.append(row)
+
+    # Only established ROOTs go through the existing-cell
+    # delta planner. New ROOTs use the guarded appender.
+    existing_pm_values = [
+        list(pm_values[0]),
+        *[
+            pad(raw, 22)
+            for raw in pm_values[1:]
+            if pad(raw, 22)[14].strip() in before
+        ],
+    ]
+
+    existing_current = [
+        row for row in current_projection
+        if clean(row.get("Root Entry ID")).strip() in before
+    ]
+
+    return {
+        "existing_pm_values": existing_pm_values,
+        "existing_current_projection": existing_current,
+        "new_rows": additions,
+        "already_present": already_present,
+        "new_root_count": len(new_ids),
+    }
+
 def export_verified_pm(
     *,
     backend_sheets: Any,
@@ -408,23 +518,23 @@ def export_verified_pm(
 
     previous = read_source_snapshot(staging, previous_tab)
 
+    root_plan = prepare_new_root_insertions(
+        pm_values, previous, current, records
+    )
+
     if source_table(previous) == source_table(current):
-        # Exact source identity: no source-derived changes.
-        # Verify the destination independently before checkpointing.
         count = verify_unchanged_pm(pm_values, current)
-        print(
-            f"V2 source unchanged: {count} PM ROOTs verified."
-        )
+        print(f"V2 source unchanged: {count} PM ROOTs verified.")
         plan = {
             "blockers": [],
             "new_root_count": 0,
             "cell_update_candidates": [],
         }
     else:
-        # Actual version change: use the full, fail-closed
-        # source/comment/reply planner.
         plan = plan_verified_pm_cells(
-            pm_values, previous, current
+            root_plan["existing_pm_values"],
+            previous,
+            root_plan["existing_current_projection"],
         )
 
     if plan["blockers"] or plan["new_root_count"]:
@@ -468,6 +578,19 @@ def export_verified_pm(
         result = writer.apply(changes, allow_writes=True)
         if not result["verified"]:
             raise RuntimeError("PM_CELL_WRITE_UNVERIFIED")
+
+        root_appender = GuardedRootAppender(
+            staging.service, STAGING_ID, PM_TAB,
+            authorized_spreadsheet_id=STAGING_ID,
+            authorized_tab=PM_TAB,
+        )
+
+        for new_row in root_plan["new_rows"]:
+            inserted = root_appender.apply(
+                new_row, allow_writes=True
+            )
+            if not inserted["verified"]:
+                raise RuntimeError("NEW_ROOT_INSERT_NOT_VERIFIED")
 
         # Never certify an export based only on changed cells.
         # Re-read and verify the entire PM source-owned state.
