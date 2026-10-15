@@ -228,23 +228,19 @@ def process_drive_folder(
             and config.get("v2_require_verified_pm_export")
             is True
         ):
-            from v2_pm_pending import unfinished_pm_exports
-
-            pending_exports = unfinished_pm_exports(
-                backend_sheets
+            from v2_pm_export_coordinator import (
+                recover_pending_pm_exports,
             )
 
-            if pending_exports:
-                states = sorted({
-                    item["state"]
-                    for item in pending_exports
-                })
-                raise RuntimeError(
-                    "V2_PM_RECOVERY_REQUIRED: "
-                    f"{len(pending_exports)} unfinished "
-                    f"PM export(s); states={states}. "
-                    "Recovery must complete before "
-                    "normal PDF processing."
+            recovery_result = recover_pending_pm_exports(
+                backend_sheets=backend_sheets,
+                config=config,
+            )
+
+            if recovery_result["recovered"]:
+                print(
+                    "V2 PM recovery completed: "
+                    f"{recovery_result['recovered']} export(s)."
                 )
 
         if not files_needing_processing:

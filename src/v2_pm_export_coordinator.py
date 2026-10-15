@@ -527,3 +527,163 @@ def export_verified_pm(
         ),
         "cell_changes": len(changes),
     }
+
+
+def validate_recovery_versions(pending, documents):
+    """Reject recovery against the wrong backend PDF version."""
+    indexed = {}
+
+    for document in documents:
+        key = clean(document.get("Document Key")).strip()
+        if not key or key in indexed:
+            raise RuntimeError("INVALID_BACKEND_DOCUMENT_REGISTRY")
+        indexed[key] = document
+
+    seen = set()
+
+    for item in pending:
+        document_key = item["document_key"]
+
+        if document_key in seen:
+            raise RuntimeError("MULTIPLE_PENDING_EXPORTS_FOR_DOCUMENT")
+        seen.add(document_key)
+
+        current = indexed.get(document_key)
+
+        if current is None:
+            raise RuntimeError(
+                "PENDING_EXPORT_DOCUMENT_NOT_FOUND: " + document_key
+            )
+
+        if (
+            clean(current.get("Current Version ID"))
+            != item["version_id"]
+            or clean(current.get("Current PDF SHA256"))
+            != item["pdf_sha256"]
+        ):
+            raise RuntimeError(
+                "PENDING_EXPORT_BACKEND_VERSION_CONFLICT: "
+                + document_key
+            )
+
+    return len(pending)
+
+
+def recover_pending_pm_exports(*, backend_sheets, config):
+    """Resume unfinished staging exports before processing PDFs.
+
+    Uses already persisted backend records. No PDF extraction.
+    Never authorizes a production destination.
+    """
+    if (
+        config.get("v2_pm_staging_apply") is not True
+        or config.get("v2_pm_output_spreadsheet_id") != STAGING_ID
+        or config.get("v2_pm_output_tab") != PM_TAB
+    ):
+        raise PermissionError("RECOVERY_STAGING_ONLY")
+
+    if backend_sheets is None:
+        raise RuntimeError("RECOVERY_BACKEND_REQUIRED")
+
+    staging = SheetsAdapter(STAGING_ID)
+
+    all_checkpoints = [
+        deserialize_checkpoint(row)
+        for row in read_checkpoint_table(staging)
+    ]
+
+    relevant = [
+        checkpoint
+        for checkpoint in all_checkpoints
+        if (
+            checkpoint["output_spreadsheet_id"] == STAGING_ID
+            and checkpoint["output_tab"] == PM_TAB
+            and checkpoint["state"] != "COMPLETED"
+        )
+    ]
+
+    if not relevant:
+        return {"recovered": 0, "pending": 0}
+
+    # Delivery-uncertain and notification-pending states
+    # require notification-specific reconciliation.
+    # Never resend an email here.
+    unsupported = [
+        x for x in relevant
+        if x["state"] not in (
+            "EXPORT_PENDING",
+            "EXPORTING",
+            "EXPORT_VERIFIED",
+        )
+    ]
+    if unsupported:
+        raise RuntimeError(
+            "NOTIFICATION_RECOVERY_REQUIRED: "
+            + repr([x["export_id"] for x in unsupported])
+        )
+
+    values = backend_sheets.get_all_values(
+        "_Documents", refresh=True
+    )
+
+    if not values:
+        raise RuntimeError("BACKEND_DOCUMENTS_MISSING")
+
+    headers = values[0]
+    documents = [
+        dict(zip(headers, pad(row, len(headers))))
+        for row in values[1:]
+    ]
+
+    validate_recovery_versions(relevant, documents)
+
+    # Recovery is idempotent: the coordinator recognizes
+    # already-applied cells and existing checkpoints.
+    results = []
+
+    for checkpoint in relevant:
+        result = export_verified_pm(
+            backend_sheets=backend_sheets,
+            output_sheets=None,
+            v2_result={
+                "document_key": checkpoint["document_key"],
+                "version_id": checkpoint["version_id"],
+                "sha256": checkpoint["pdf_sha256"],
+            },
+            drive_file=None,
+            config=config,
+        )
+
+        if result.get("verified") is not True:
+            raise RuntimeError(
+                "PM_RECOVERY_NOT_VERIFIED: "
+                + checkpoint["export_id"]
+            )
+
+        results.append(result)
+
+    # Verify that recovery actually completed all scoped exports.
+    remaining = [
+        deserialize_checkpoint(row)
+        for row in read_checkpoint_table(staging)
+    ]
+
+    still_pending = [
+        x for x in remaining
+        if (
+            x["output_spreadsheet_id"] == STAGING_ID
+            and x["output_tab"] == PM_TAB
+            and x["state"] != "COMPLETED"
+        )
+    ]
+
+    if still_pending:
+        raise RuntimeError(
+            "PM_RECOVERY_INCOMPLETE: "
+            + repr([x["export_id"] for x in still_pending])
+        )
+
+    return {
+        "recovered": len(results),
+        "pending": 0,
+    }
