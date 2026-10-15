@@ -13,7 +13,10 @@ from dotenv import load_dotenv
 
 from alerts import classify_pdf_result
 from notifier import notify_alert
-from v2_pipeline_notifications import dispatch_pipeline_alert
+from v2_pipeline_notifications import (
+    dispatch_pipeline_alert,
+    verified_completion_fallback,
+)
 from drive_adapter import DriveAdapter
 from extractor import (
     assess_master_compatibility,

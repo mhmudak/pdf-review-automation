@@ -124,3 +124,41 @@ def dispatch_pipeline_alert(
         send_email_fn=sender or send_email,
         allow_writes=True,
     )
+
+
+def verified_completion_fallback(alerts, route_result):
+    """Return a PM confirmation only if none already exists.
+
+    Never infer export success from configuration alone.
+    Does not send mail or modify Sheets.
+    """
+    result = route_result or {}
+    proof = result.get("pm_export_result") or {}
+
+    if (
+        not isinstance(proof, dict)
+        or proof.get("verified") is not True
+        or not str(proof.get("export_id") or "").strip()
+    ):
+        return None
+
+    for alert in alerts or []:
+        audience = [
+            str(item).strip().upper()
+            for item in alert.get("audience", [])
+        ]
+        if "PM" in audience:
+            return None
+
+    return {
+        "code": "PDF_EXPORT_VERIFIED",
+        "severity": "INFO",
+        "audience": ["PM"],
+        "pm_actionable": False,
+        "message": (
+            "The PDF was processed successfully. "
+            "Its review results were verified in the "
+            "designated PM spreadsheet. "
+            "Export ID: " + str(proof["export_id"])
+        ),
+    }
