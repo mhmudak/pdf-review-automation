@@ -167,3 +167,37 @@ def test_production_destination_is_not_authorized():
             authorized_spreadsheet_id="staging",
             authorized_tab="PM",
         )
+
+
+def test_root_retry_preserves_manually_assigned_category():
+    service = FakeSheets()
+    instance = writer(service)
+
+    instance.apply(desired(), allow_writes=True)
+
+    # A PM assigns a category after PrOps appended the ROOT.
+    service.rows[2][8] = "Manually reviewed category"
+
+    result = instance.apply(
+        desired(), allow_writes=True
+    )
+
+    assert result["action"] == "ALREADY_PRESENT"
+    assert service.rows[2][8] == "Manually reviewed category"
+    assert service.append_count == 1
+
+
+def test_root_retry_rejects_modified_source_owned_comment():
+    service = FakeSheets()
+    instance = writer(service)
+
+    instance.apply(desired(), allow_writes=True)
+    service.rows[2][4] = "Unapproved comment modification"
+
+    with pytest.raises(
+        PMRootInsertConflict,
+        match="EXISTING_ROOT_CONTENT_CONFLICT",
+    ):
+        instance.apply(desired(), allow_writes=True)
+
+    assert service.append_count == 1

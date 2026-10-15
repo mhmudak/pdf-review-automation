@@ -22,6 +22,21 @@ def padded(row, width=22):
     ] * (width - len(row))
 
 
+
+def source_owned_root_matches(existing, expected):
+    """Compare inserted ROOT data without overwriting PM categories.
+
+    Column I (index 8) is human-managed. Every other A:V value
+    must match the originally exported ROOT row.
+    """
+    existing = padded(existing)
+    expected = padded(expected)
+    return all(
+        existing[index] == expected[index]
+        for index in range(22)
+        if index != 8
+    )
+
 class GuardedRootAppender:
     def __init__(
         self,
@@ -105,7 +120,9 @@ class GuardedRootAppender:
             existing[identity] = row
 
         if root_id in existing:
-            if existing[root_id] != desired:
+            if not source_owned_root_matches(
+                existing[root_id], desired
+            ):
                 raise PMRootInsertConflict(
                     "EXISTING_ROOT_CONTENT_CONFLICT"
                 )

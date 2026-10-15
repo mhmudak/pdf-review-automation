@@ -127,3 +127,20 @@ def test_source_root_removal_is_blocked():
             [],
             [backend(OLD)],
         )
+
+
+def test_coordinator_retry_preserves_new_root_human_category():
+    from v2_pm_staging_snapshot import new_root_row
+
+    inserted = new_root_row(projected(NEW), backend(NEW))
+    inserted[8] = "PM assigned category"
+
+    result = prepare_new_root_insertions(
+        [list(PM_HEADER_SEQUENCE), pm_row(OLD), inserted],
+        [projected(OLD)],
+        [projected(OLD), projected(NEW)],
+        [backend(OLD), backend(NEW)],
+    )
+
+    assert result["new_rows"] == []
+    assert result["already_present"] == [NEW]

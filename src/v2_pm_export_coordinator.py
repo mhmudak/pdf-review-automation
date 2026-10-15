@@ -19,7 +19,7 @@ from v2_output_projection import project_backend_rows
 from v2_pm_cell_plan import PM_HEADER_SEQUENCE
 from v2_pm_combined_plan import plan_verified_pm_cells
 from v2_pm_staging_snapshot import new_root_row
-from v2_pm_root_writer import GuardedRootAppender
+from v2_pm_root_writer import (GuardedRootAppender, source_owned_root_matches)
 from v2_pm_safe_writer import GuardedPMWriter, CellChange
 from v2_pm_checkpoint import (
     new_export_checkpoint,
@@ -355,7 +355,9 @@ def prepare_new_root_insertions(
         if key in pm_rows:
             # Recovery after append: no second insertion.
             # A mismatching row is never overwritten.
-            if pm_rows[key] != row:
+            if not source_owned_root_matches(
+                pm_rows[key], row
+            ):
                 raise RuntimeError("APPENDED_ROOT_CONTENT_CONFLICT")
             already_present.append(key)
         else:
