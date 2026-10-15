@@ -158,6 +158,31 @@ def process_drive_folder(
     # Nothing in the monitored folder means there is
     # nothing else to initialize or read.
     if not pdf_files:
+        # An empty folder does not necessarily mean that
+        # an earlier, interrupted export has completed.
+        # Recover from persisted backend records; never
+        # download or extract a PDF for this purpose.
+        if (
+            v2_enabled
+            and not dry_run
+            and require_verified_pm_export
+        ):
+            from v2_pm_export_coordinator import (
+                recover_pending_pm_exports,
+            )
+
+            recovery = recover_pending_pm_exports(
+                backend_sheets=SheetsAdapter(spreadsheet_id),
+                config=config,
+            )
+
+            if recovery["recovered"]:
+                print(
+                    "V2 PM recovery completed with empty "
+                    "Drive folder: "
+                    f"{recovery['recovered']} export(s)."
+                )
+
         return {
             "files_seen": 0,
             "results": [],
