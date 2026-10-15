@@ -21,10 +21,21 @@ def _bool_env(name: str, default: bool = False) -> bool:
     }
 
 
+def notification_mode() -> str:
+    mode = os.getenv(
+        "NOTIFICATION_MODE", "OFF"
+    ).strip().upper()
+
+    if mode not in {"OFF", "TEST", "FINAL", "PRODUCTION"}:
+        raise RuntimeError("INVALID_NOTIFICATION_MODE")
+
+    return mode
+
+
 def notifications_enabled() -> bool:
-    return _bool_env(
-        "NOTIFICATIONS_ENABLED",
-        False,
+    return (
+        _bool_env("NOTIFICATIONS_ENABLED", False)
+        and notification_mode() != "OFF"
     )
 
 
@@ -32,6 +43,29 @@ def recipients_for_audience(
     audience: list[str],
 ) -> list[str]:
     recipients: list[str] = []
+
+    mode = notification_mode()
+
+    if mode == "OFF":
+        return []
+
+    if mode == "TEST":
+        admin = os.getenv("ADMIN_EMAIL", "").strip()
+        if not admin:
+            raise RuntimeError(
+                "ADMIN_EMAIL_REQUIRED_FOR_TEST"
+            )
+        return [admin]
+
+    if (
+        mode == "FINAL"
+        and not _bool_env(
+            "PM_FINAL_TEST_AUTHORIZED", False
+        )
+    ):
+        raise RuntimeError(
+            "PM_FINAL_TEST_NOT_AUTHORIZED"
+        )
 
     admin_email = os.getenv(
         "ADMIN_EMAIL",
@@ -83,8 +117,13 @@ def build_subject(
         )
     )
 
+    prefix = {
+        "TEST": "[TEST]",
+        "FINAL": "[FINAL TEST]",
+    }.get(notification_mode(), "")
+
     return (
-        f"[PDF Review][{severity}] "
+        f"{prefix}[PDF Review][{severity}] "
         f"{file_name} - {code}"
     )
 

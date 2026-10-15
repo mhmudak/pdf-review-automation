@@ -8,6 +8,8 @@ from notifier import (
 
 
 def test_admin_recipient(monkeypatch):
+    monkeypatch.setenv("NOTIFICATION_MODE", "PRODUCTION")
+
     monkeypatch.setenv(
         "ADMIN_EMAIL",
         "admin@example.com",
@@ -28,6 +30,8 @@ def test_admin_recipient(monkeypatch):
 
 
 def test_pm_recipient(monkeypatch):
+    monkeypatch.setenv("NOTIFICATION_MODE", "PRODUCTION")
+
     monkeypatch.setenv(
         "PM_EMAIL",
         "pm@example.com",
@@ -48,6 +52,8 @@ def test_pm_recipient(monkeypatch):
 
 
 def test_admin_and_pm_recipient(monkeypatch):
+    monkeypatch.setenv("NOTIFICATION_MODE", "PRODUCTION")
+
     monkeypatch.setenv(
         "ADMIN_EMAIL",
         "admin@example.com",
