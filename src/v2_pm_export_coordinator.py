@@ -73,6 +73,61 @@ def pad(row, width):
     return list(row) + [""] * (width - len(row))
 
 
+def pm_grid_width(adapter, tab):
+    """Read actual PM grid width; never guess that W exists."""
+    response = adapter.service.spreadsheets().get(
+        spreadsheetId=adapter.spreadsheet_id,
+        fields="sheets(properties(title,gridProperties(columnCount)))",
+    ).execute()
+    matches = [
+        item.get("properties", {}).get("gridProperties", {}).get("columnCount", 0)
+        for item in response.get("sheets", [])
+        if item.get("properties", {}).get("title") == tab
+    ]
+    if len(matches) != 1 or int(matches[0]) < 22:
+        raise RuntimeError("PM_GRID_STRUCTURE_CONFLICT")
+    return int(matches[0])
+
+
+def pm_column_letter(position):
+    """One-based spreadsheet column number to A1 notation."""
+    result = ""
+    while position:
+        position, remainder = divmod(position - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def read_pm_grid(adapter, tab):
+    """Read and validate managed headers and every PM custom column.
+
+    Return only the canonical A:V view to the positional writer.
+    A custom field after V is human-owned and never used for writes.
+    """
+    width = pm_grid_width(adapter, tab)
+    full = read_values(adapter, tab, pm_column_letter(width))
+    if not full or list(full[0][:22]) != list(PM_HEADER_SEQUENCE):
+        raise RuntimeError("PM_OUTPUT_SCHEMA_CONFLICT")
+    trailing = list(full[0][22:])
+    if any(not str(h).strip() for h in trailing):
+        # Empty trailing headers are acceptable only when their cells
+        # have no human content; a newly added, unused W is safe.
+        for index, header in enumerate(trailing, start=22):
+            if not str(header).strip() and any(
+                len(row) > index and str(row[index]).strip()
+                for row in full[1:]
+            ):
+                raise RuntimeError("UNNAMED_CUSTOM_COLUMN_WITH_DATA")
+    if len([x for x in trailing if str(x).strip()]) != len(set(
+        str(x).strip() for x in trailing if str(x).strip()
+    )):
+        raise RuntimeError("DUPLICATE_CUSTOM_COLUMN_HEADER")
+    managed = set(PM_HEADER_SEQUENCE)
+    if any(str(x).strip() in managed for x in trailing if str(x).strip()):
+        raise RuntimeError("CUSTOM_COLUMN_HEADER_SHADOWS_SYSTEM")
+    return [list(row[:22]) for row in full]
+
+
 def read_values(adapter, tab, end):
     return adapter.service.spreadsheets().values().get(
         spreadsheetId=adapter.spreadsheet_id,
@@ -153,7 +208,7 @@ def verify_full_pm_destination(adapter, expected_projection):
     differences, but never ignore ROOT IDs, source comments or
     ordered reply IDs.
     """
-    latest = read_values(adapter, PM_TAB, "V")
+    latest = read_pm_grid(adapter, PM_TAB)
     return verify_unchanged_pm(latest, expected_projection)
 
 
@@ -480,7 +535,7 @@ def export_verified_pm(
 
     staging = SheetsAdapter(STAGING_ID)
 
-    pm_values = read_values(staging, PM_TAB, "V")
+    pm_values = read_pm_grid(staging, PM_TAB)
     if not pm_values or pm_values[0] != PM_HEADER_SEQUENCE:
         raise RuntimeError("PM_OUTPUT_SCHEMA_CONFLICT")
 
