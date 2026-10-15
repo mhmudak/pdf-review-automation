@@ -108,7 +108,10 @@ def read_pm_grid(adapter, tab):
     full = read_values(adapter, tab, pm_column_letter(width))
     if not full or list(full[0][:22]) != list(PM_HEADER_SEQUENCE):
         raise RuntimeError("PM_OUTPUT_SCHEMA_CONFLICT")
-    trailing = list(full[0][22:])
+    # Google Sheets omits empty trailing cells from returned rows.
+    # Validate all physically existing columns, including blank W1.
+    trailing = list(full[0][22:width])
+    trailing.extend([""] * (width - 22 - len(trailing)))
     if any(not str(h).strip() for h in trailing):
         # Empty trailing headers are acceptable only when their cells
         # have no human content; a newly added, unused W is safe.
