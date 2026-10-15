@@ -64,7 +64,7 @@ def test_precheck_skips_unchanged_drive_file():
             file_id="file-1",
             modified_time="2026-10-09T10:00:00Z",
             size=100,
-        )
+        status="PROCESSED", )
     }
 
     file_meta = SimpleNamespace(

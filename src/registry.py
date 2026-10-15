@@ -79,9 +79,21 @@ def precheck(
         and existing.size
         == file_meta.size
     ):
+        status = str(existing.status or "").strip().upper()
+
+        # Metadata equality is not evidence that processing
+        # completed. Failed or incomplete files must be retried.
+        if status in {"PROCESSED", "DUPLICATE"}:
+            return (
+                "SKIP_UNCHANGED",
+                "same successfully recorded Drive file "
+                "ID, modifiedTime and size",
+            )
+
         return (
-            "SKIP_UNCHANGED",
-            "same Drive file ID, modifiedTime and size",
+            "PROCESS",
+            "previous file status is not successfully completed: "
+            + (status or "UNKNOWN"),
         )
 
     return "PROCESS", ""
