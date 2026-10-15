@@ -164,6 +164,10 @@ def process_drive_folder(
         folder_id
     )
 
+    if dry_run:
+        from v2_dry_run_limit import select_dry_run_pdfs
+        pdf_files = select_dry_run_pdfs(pdf_files)
+
     print(
         f"Drive scan complete: "
         f"{len(pdf_files)} PDF(s) found."
