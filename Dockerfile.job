@@ -1,0 +1,9 @@
+# One-shot Cloud Run Job image. Does not replace the HTTP service Dockerfile.
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY src/ ./
+# Cloud Run Job finishes when this process exits.
+ENTRYPOINT ["python", "job_runner.py"]
