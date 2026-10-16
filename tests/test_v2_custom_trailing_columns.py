@@ -31,29 +31,34 @@ def test_populated_custom_w_is_preserved_and_not_forwarded_to_writer():
     assert result[1][14] == "root-1"
 
 
-def test_custom_field_between_category_and_selected_text_fails_closed():
+def test_named_custom_column_between_system_columns_is_preserved():
     headers = list(PM_HEADER_SEQUENCE)
     headers.insert(9, "PM Notes")
-    with pytest.raises(RuntimeError, match="SCHEMA_CONFLICT"):
-        read_pm_grid(adapter([headers], 23), "Trial PDF - All Data")
+    row = [""] * 23
+    row[9] = "Human data"
+    row[15] = "root-1"
+    result = read_pm_grid(adapter([headers, row], 23), "Trial PDF - All Data")
+    assert result[0] == list(PM_HEADER_SEQUENCE)
+    assert len(result[1]) == 22
+    assert result[1][14] == "root-1"
 
 
 def test_unnamed_populated_custom_column_rejected():
     row = [""] * 23
     row[22] = "Unlabeled human content"
-    with pytest.raises(RuntimeError, match="UNNAMED_CUSTOM"):
+    with pytest.raises(RuntimeError, match="PM_UNNAMED_COLUMN_WITH_DATA"):
         read_pm_grid(adapter([list(PM_HEADER_SEQUENCE), row], 23), "Trial PDF - All Data")
 
 
 def test_duplicate_custom_header_rejected():
     headers = list(PM_HEADER_SEQUENCE) + ["Notes", "Notes"]
-    with pytest.raises(RuntimeError, match="DUPLICATE_CUSTOM"):
+    with pytest.raises(RuntimeError, match="PM_DUPLICATE_HEADER"):
         read_pm_grid(adapter([headers], 24), "Trial PDF - All Data")
 
 
 def test_shadowed_system_header_rejected():
     headers = list(PM_HEADER_SEQUENCE) + ["Category"]
-    with pytest.raises(RuntimeError, match="SHADOWS_SYSTEM"):
+    with pytest.raises(RuntimeError, match="PM_DUPLICATE_HEADER"):
         read_pm_grid(adapter([headers], 23), "Trial PDF - All Data")
 
 

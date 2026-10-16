@@ -46,6 +46,7 @@ class GuardedRootAppender:
         *,
         authorized_spreadsheet_id,
         authorized_tab,
+        column_mapping=None,
     ):
         if (
             not spreadsheet_id
@@ -58,19 +59,23 @@ class GuardedRootAppender:
         self.service = service
         self.spreadsheet_id = spreadsheet_id
         self.tab = tab
+        self.column_mapping = column_mapping
 
     def read(self):
-        response = (
-            self.service.spreadsheets().values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"'{self.tab}'!A1:V",
-                valueRenderOption="FORMULA",
-            ).execute()
+        end = (
+            self.column_mapping.last_column
+            if self.column_mapping is not None else "V"
         )
-        return [
-            padded(row)
-            for row in response.get("values", [])
-        ]
+        response = self.service.spreadsheets().values().get(
+            spreadsheetId=self.spreadsheet_id,
+            range=f"'{self.tab}'!A1:{end}",
+            valueRenderOption="FORMULA",
+        ).execute()
+        rows = response.get("values", [])
+        if self.column_mapping is None:
+            return [padded(row) for row in rows]
+        self.column_mapping.check_headers(rows)
+        return self.column_mapping.canonical_rows(rows)
 
     def sheet_id(self):
         response = self.service.spreadsheets().get(
@@ -153,10 +158,14 @@ class GuardedRootAppender:
 
         # Single Sheets appendCells request. String values are
         # literal, not executable formulas.
+        physical = (
+            self.column_mapping.physical_row(desired)
+            if self.column_mapping is not None else desired
+        )
         cells = [
             {"userEnteredValue": {"stringValue": value}}
             if value else {}
-            for value in desired
+            for value in physical
         ]
 
         self.service.spreadsheets().batchUpdate(

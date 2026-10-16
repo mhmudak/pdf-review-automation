@@ -51,6 +51,7 @@ class GuardedPMWriter:
         self, service, spreadsheet_id, tab,
         *, authorized_spreadsheet_id,
         authorized_tab,
+        column_mapping=None,
     ):
         if (
             spreadsheet_id != authorized_spreadsheet_id
@@ -66,6 +67,7 @@ class GuardedPMWriter:
         self.service = service
         self.spreadsheet_id = spreadsheet_id
         self.tab = tab
+        self.column_mapping = column_mapping
 
     def read_cell(self, cell, *, render="FORMATTED_VALUE"):
         result = self.service.spreadsheets().values().get(
@@ -79,7 +81,23 @@ class GuardedPMWriter:
             if values and values[0] else ""
         )
 
+    def root_cell(self, row):
+        if self.column_mapping is None:
+            return f"O{row}"
+        return self.column_mapping.physical_cell(f"O{row}")
+
+    def verify_live_headers(self):
+        if self.column_mapping is None:
+            return
+        response = self.service.spreadsheets().values().get(
+            spreadsheetId=self.spreadsheet_id,
+            range=f"'{self.tab}'!A1:{self.column_mapping.last_column}1",
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute()
+        self.column_mapping.check_headers(response.get("values", []))
+
     def apply(self, changes, *, allow_writes=False):
+        self.verify_live_headers()
         if len({x.cell for x in changes}) != len(changes):
             raise ValueError("Duplicate target cells")
 
@@ -93,12 +111,17 @@ class GuardedPMWriter:
             if row < 2:
                 raise ValueError("Header cells are protected")
 
-            if col not in (4, 5, 6, 7, 21):
+            permitted = (
+                set(self.column_mapping.writable_positions)
+                if self.column_mapping is not None
+                else {4, 5, 6, 7, 21}
+            )
+            if col not in permitted:
                 raise ValueError(
                     f"Unapproved output column: {change.cell}"
                 )
 
-            root = self.read_cell(f"O{row}")
+            root = self.read_cell(self.root_cell(row))
             if root != change.root_id:
                 raise PMWriteConflict(
                     f"ROOT_ID_CONFLICT at {change.cell}"
@@ -138,7 +161,7 @@ class GuardedPMWriter:
         # Recheck every target immediately before the write.
         for change in pending:
             _, row = parse_cell(change.cell)
-            if self.read_cell(f"O{row}") != change.root_id:
+            if self.read_cell(self.root_cell(row)) != change.root_id:
                 raise PMWriteConflict(
                     f"ROOT_MOVED at {change.cell}"
                 )
@@ -153,6 +176,7 @@ class GuardedPMWriter:
                     f"FORMULA_PROTECTED at {change.cell}"
                 )
 
+        self.verify_live_headers()
         self.service.spreadsheets().values().batchUpdate(
             spreadsheetId=self.spreadsheet_id,
             body={
@@ -171,7 +195,7 @@ class GuardedPMWriter:
         for change in pending:
             _, row = parse_cell(change.cell)
             if (
-                self.read_cell(f"O{row}") != change.root_id
+                self.read_cell(self.root_cell(row)) != change.root_id
                 or self.read_cell(change.cell) != change.new_value
             ):
                 raise PMWriteVerificationError(

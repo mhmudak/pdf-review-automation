@@ -140,34 +140,23 @@ def pm_column_letter(position):
 
 
 def read_pm_grid(adapter, tab):
-    """Read and validate managed headers and every PM custom column.
+    """Read physical PM grid and return canonical A:V projection.
 
-    Return only the canonical A:V view to the positional writer.
-    A custom field after V is human-owned and never used for writes.
+    The physical mapping is validated from unique header names; unknown
+    columns are PM-owned and never included in source-owned writes.
     """
     width = pm_grid_width(adapter, tab)
     full = read_values(adapter, tab, pm_column_letter(width))
-    if not full or list(full[0][:22]) != list(PM_HEADER_SEQUENCE):
-        raise RuntimeError("PM_OUTPUT_SCHEMA_CONFLICT")
-    trailing = list(full[0][22:width])
-    trailing.extend([""] * (width - 22 - len(trailing)))
-    if any(not str(h).strip() for h in trailing):
-        # Empty trailing headers are acceptable only when their cells
-        # have no human content; a newly added, unused W is safe.
-        for index, header in enumerate(trailing, start=22):
-            if not str(header).strip() and any(
-                len(row) > index and str(row[index]).strip()
-                for row in full[1:]
-            ):
-                raise RuntimeError("UNNAMED_CUSTOM_COLUMN_WITH_DATA")
-    if len([x for x in trailing if str(x).strip()]) != len(set(
-        str(x).strip() for x in trailing if str(x).strip()
-    )):
-        raise RuntimeError("DUPLICATE_CUSTOM_COLUMN_HEADER")
-    managed = set(PM_HEADER_SEQUENCE)
-    if any(str(x).strip() in managed for x in trailing if str(x).strip()):
-        raise RuntimeError("CUSTOM_COLUMN_HEADER_SHADOWS_SYSTEM")
-    return [list(row[:22]) for row in full]
+    from v2_pm_column_mapping import PMColumnMapping
+    mapping = PMColumnMapping.from_rows(full, width)
+    return mapping.canonical_rows(full)
+
+
+def read_pm_mapping(adapter, tab):
+    from v2_pm_column_mapping import PMColumnMapping
+    width = pm_grid_width(adapter, tab)
+    full = read_values(adapter, tab, pm_column_letter(width))
+    return PMColumnMapping.from_rows(full, width)
 
 
 def read_values(adapter, tab, end):
@@ -573,6 +562,7 @@ def export_verified_pm(
     staging = output_adapter
 
     pm_values = read_pm_grid(staging, PM_TAB)
+    pm_mapping = read_pm_mapping(staging, PM_TAB)
     if not pm_values or pm_values[0] != PM_HEADER_SEQUENCE:
         raise RuntimeError("PM_OUTPUT_SCHEMA_CONFLICT")
 
@@ -681,7 +671,7 @@ def export_verified_pm(
 
         changes.append(CellChange(
             root_id=candidate["root_entry_id"],
-            cell=cell,
+            cell=pm_mapping.physical_cell(cell),
             expected_value=candidate["expected_value"],
             new_value=candidate["new_value"],
         ))
@@ -690,6 +680,7 @@ def export_verified_pm(
         staging.service, destination, PM_TAB,
         authorized_spreadsheet_id=destination,
         authorized_tab=PM_TAB,
+        column_mapping=pm_mapping,
     )
 
     if checkpoint["state"] == "EXPORT_PENDING":
@@ -713,6 +704,7 @@ def export_verified_pm(
             staging.service, destination, PM_TAB,
             authorized_spreadsheet_id=destination,
             authorized_tab=PM_TAB,
+            column_mapping=pm_mapping,
         )
 
         for new_row in root_plan["new_rows"]:
