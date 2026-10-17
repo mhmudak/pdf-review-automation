@@ -18,6 +18,9 @@ def ensure_v2_runtime_safety(*, v2_enabled, dry_run, config, output_spreadsheet_
     destination = str(config.get("v2_pm_output_spreadsheet_id") or "").strip()
     tab = str(config.get("v2_pm_output_tab") or "").strip()
     require_export = config.get("v2_require_verified_pm_export") is True
+    runtime_destination = str(output_spreadsheet_id or "").strip()
+    if runtime_destination != destination:
+        raise PermissionError("PM_OUTPUT_DESTINATION_MISMATCH")
     notifications_on = os.environ.get("NOTIFICATIONS_ENABLED", "").strip().lower() in {"true", "1", "yes", "on"}
     notification_mode = os.environ.get("NOTIFICATION_MODE", "OFF").strip().upper()
 

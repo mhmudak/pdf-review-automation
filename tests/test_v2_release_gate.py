@@ -48,3 +48,16 @@ def test_unapproved_destination_blocked(monkeypatch):
 
 def test_dry_run_never_enables_pm_export_or_email(monkeypatch):
     assert check(monkeypatch, dry_run=True, enabled="false")["mode"] == "V2"
+
+
+def test_rejects_runtime_destination_mismatch_before_io(monkeypatch):
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "false")
+    with pytest.raises(PermissionError, match="PM_OUTPUT_DESTINATION_MISMATCH"):
+        ensure_v2_runtime_safety(
+            v2_enabled=True, dry_run=False,
+            config={"v2_pm_output_spreadsheet_id": STAGING_PM_ID,
+                    "v2_pm_output_tab": PM_TAB,
+                    "v2_pm_staging_apply": True,
+                    "v2_require_verified_pm_export": True},
+            output_spreadsheet_id=PRODUCTION_PM_ID,
+        )
