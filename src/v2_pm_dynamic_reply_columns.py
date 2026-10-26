@@ -74,25 +74,33 @@ def plan_reply_column_expansion(physical_rows: list[list[Any]], grid_width: int,
             raise ValueError("UNNAMED_COLUMN_WITH_DATA")
     depth = reply_depth(projection)
     missing = [f"Reply {i}" for i in range(max(present) + 1, depth + 1)]
-    # Only a contiguous, completely empty suffix is eligible. Never fill
-    # interior unnamed columns; they may be PM-owned reserved space.
-    suffix_start = grid_width
-    if reuse_trailing_blank:
-        while suffix_start > 0 and not headers[suffix_start - 1]:
-            suffix_start -= 1
-    reusable = min(len(missing), grid_width - suffix_start)
-    reused = missing[:reusable]
-    appended = missing[reusable:]
+    # PM-facing replies must be contiguous immediately after Reply 3.
+    # Sheets insertDimension shifts Category and every existing PM-owned
+    # column, preserving their values, formulas and formatting.
+    first = headers.index("Reply 1")
+    if any(headers[first + i - 1] != f"Reply {i}" for i in range(1, max(present) + 1)):
+        raise ValueError("PM_REPLY_COLUMNS_NOT_ADJACENT")
+    at = first + max(present)
+    # A failed insertion may leave unnamed columns precisely at the intended
+    # reply location. Reconcile only if the FULL physical column is empty.
+    blank = 0
+    while at + blank < grid_width and not headers[at + blank]:
+        blank += 1
+    reusable = min(blank, len(missing))
+    if blank and not reuse_trailing_blank and missing:
+        raise RuntimeError("PM_BLANK_REPLY_SLOT_REQUIRES_REVIEW")
+    reused, inserted = missing[:reusable], missing[reusable:]
+    expected = (headers[:at] + reused + inserted + headers[at + reusable:])
     return {
         "mode": "DRY_RUN",
         "existing_grid_width": grid_width,
         "reply_depth": depth,
-        "append_headers": appended,
+        "append_headers": inserted,  # compatibility with existing coordinator
+        "insert_headers": inserted,
         "reuse_headers": reused,
-        "reused_header_indices": list(range(suffix_start, suffix_start + reusable)),
-        "new_header_indices": list(range(suffix_start, grid_width + len(appended))),
-        "expected_headers": headers[:suffix_start] + reused
-            + headers[suffix_start + reusable:] + appended,
+        "insert_index": at + reusable,
+        "new_header_indices": list(range(at, at + len(missing))),
+        "expected_headers": expected,
         "google_write_operations": [],
-        "requires_structural_write": bool(appended),
+        "requires_structural_write": bool(inserted),
     }

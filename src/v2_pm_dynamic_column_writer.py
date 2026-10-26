@@ -60,11 +60,6 @@ class DynamicReplyColumnWriter:
         )
         additions = plan['append_headers']
         reused = plan['reuse_headers']
-        # An unlabelled rightmost grid column may be an interrupted prior
-        # append. Never add another Reply N past such a column.
-        if additions and not reuse_trailing_blank and (not before_rows[0] or len(before_rows[0]) < before_width
-                          or not str(before_rows[0][-1]).strip()):
-            raise RuntimeError('PM_TRAILING_BLANK_COLUMN_REQUIRES_REVIEW')
         if not additions and not reused:
             return {'verified': True, 'appended': [], 'reused': [], 'writes': 0}
         if not allow_writes:
@@ -75,14 +70,17 @@ class DynamicReplyColumnWriter:
             raise RuntimeError('PM_COLUMNS_CHANGED_BEFORE_WRITE')
         api = self.service.spreadsheets()
         if additions:
+            at = plan['insert_index']
             api.batchUpdate(
                 spreadsheetId=self.spreadsheet_id,
-                body={'requests': [{'appendDimension': {
-                    'sheetId': self._sheet_id(), 'dimension': 'COLUMNS',
-                    'length': len(additions)}}]},
+                body={'requests': [{'insertDimension': {
+                    'range': {'sheetId': self._sheet_id(), 'dimension': 'COLUMNS',
+                              'startIndex': at, 'endIndex': at + len(additions)},
+                    'inheritFromBefore': True,
+                }}]},
             ).execute()
-        # AppendDimension succeeded. Never retry if header write fails;
-        # a reconciliation is required for the now-unlabeled columns.
+        # A crash after insertDimension leaves blank slots after Reply N;
+        # verified recovery reuses those slots without inserting again.
         start = plan['new_header_indices'][0]
         headers_to_write = reused + additions
         api.values().update(
@@ -95,14 +93,21 @@ class DynamicReplyColumnWriter:
         after_width = self._grid_width()
         after_rows = self._rows(after_width)
         if after_width != before_width + len(additions):
-            raise RuntimeError('PM_COLUMN_APPEND_READBACK_FAILED')
+            raise RuntimeError('PM_COLUMN_INSERT_READBACK_FAILED')
         expected = plan['expected_headers']
         actual_headers = list(after_rows[0]) + [''] * (after_width - len(after_rows[0]))
         if actual_headers != expected:
-            raise RuntimeError('PM_HEADER_APPEND_READBACK_FAILED')
+            raise RuntimeError('PM_HEADER_INSERT_READBACK_FAILED')
         # Verify every existing data cell, including PM-owned custom cells.
         # Only header cells can have changed in this operation.
-        if after_rows[1:] != before_rows[1:]:
+        # Inserted columns shift all existing cells; a reused blank slot does not.
+        inserted_at = plan['insert_index']
+        def shifted(row):
+            full = list(row) + [''] * (before_width - len(row))
+            return (full[:inserted_at] + [''] * len(additions)
+                    + full[inserted_at:])
+        if ([list(r) + [''] * (after_width - len(r)) for r in after_rows[1:]]
+                != [shifted(r) for r in before_rows[1:]]):
             raise RuntimeError('PM_EXISTING_DATA_CHANGED')
         if plan_reply_column_expansion(after_rows, after_width, projection,
                                        reuse_trailing_blank=reuse_trailing_blank)['append_headers']:

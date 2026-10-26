@@ -713,6 +713,21 @@ def export_verified_pm(
             )
             if not expanded["verified"]:
                 raise RuntimeError("PM_DYNAMIC_HEADERS_UNVERIFIED")
+            # Rebind every staged legacy edit to freshly resolved physical
+            # positions; J onward moved right when replies were inserted.
+            pm_mapping = read_pm_mapping(staging, PM_TAB)
+            changes = [CellChange(
+                root_id=item["root_entry_id"],
+                cell=pm_mapping.physical_cell(clean(item["cell"])),
+                expected_value=item["expected_value"],
+                new_value=item["new_value"],
+            ) for item in plan["cell_update_candidates"]]
+            writer = GuardedPMWriter(
+                staging.service, destination, PM_TAB,
+                authorized_spreadsheet_id=destination,
+                authorized_tab=PM_TAB,
+                column_mapping=pm_mapping,
+            )
             width = pm_grid_width(staging, PM_TAB)
             physical = read_values(staging, PM_TAB, pm_column_letter(width))
             updated = apply_dynamic_reply_plan(
