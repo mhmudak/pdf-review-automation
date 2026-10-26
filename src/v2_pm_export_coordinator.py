@@ -168,79 +168,57 @@ def read_values(adapter, tab, end):
 
 
 def source_fields(rows):
-    result = {}
-    for row in rows:
-        key = clean(row.get("Root Entry ID")).strip()
-        if not key or key in result:
-            raise RuntimeError("Duplicate or missing source ROOT ID")
-
-        if clean(row.get("Reply 4")).strip():
-            raise RuntimeError("MORE_THAN_THREE_REPLIES")
-
-        values = [
-            key,
-            clean(row.get("Comment")),
-            clean(row.get("Reply 1")),
-            clean(row.get("Reply 2")),
-            clean(row.get("Reply 3")),
-            ids(row.get("Reply Entry IDs")),
-        ]
-        result[key] = values
-
-    return [result[k] for k in sorted(result)]
+    """Canonical source fields; legacy Reply 1–3 order is preserved."""
+    from v2_pm_dynamic_source_snapshot import create_table
+    return [row[:-2] for row in create_table(rows)[1:]]
 
 
 def source_table(rows):
-    fields = source_fields(rows)
-    snapshot_id = digest(fields)
-    return [
-        SOURCE_HEADERS,
-        *[[*r, digest(r), snapshot_id] for r in fields],
-    ]
+    from v2_pm_dynamic_source_snapshot import create_table
+    return create_table(rows)
 
 
 def read_source_snapshot(adapter, tab):
-    raw = read_values(adapter, tab, "H")
-    if not raw or raw[0] != SOURCE_HEADERS:
-        raise RuntimeError("SOURCE_SNAPSHOT_SCHEMA_CONFLICT")
-
-    records = [pad(row, 8) for row in raw[1:]]
-    if not records:
+    """Read legacy or dynamic snapshots, verifying the entire digest."""
+    from v2_pm_dynamic_source_snapshot import read_table, validate_headers
+    # Read the whole header by querying a bounded range, not just A:H.
+    header_response = adapter.service.spreadsheets().values().get(
+        spreadsheetId=adapter.spreadsheet_id,
+        range=f"'{tab}'!A1:ZZ1",
+        valueRenderOption="FORMATTED_VALUE",
+    ).execute()
+    headers = header_response.get("values", [])
+    if not headers:
         raise RuntimeError("EMPTY_SOURCE_SNAPSHOT")
-
-    previous_ids = set()
-    snapshot_ids = set()
-
-    for row in records:
-        if not row[0] or row[0] in previous_ids:
-            raise RuntimeError("SOURCE_SNAPSHOT_ID_CONFLICT")
-        previous_ids.add(row[0])
-        snapshot_ids.add(row[7])
-        if digest(row[:6]) != row[6]:
-            raise RuntimeError("SOURCE_SNAPSHOT_ROW_TAMPERED")
-
-    if (
-        len(snapshot_ids) != 1
-        or digest([r[:6] for r in records])
-        != next(iter(snapshot_ids))
-    ):
-        raise RuntimeError("SOURCE_SNAPSHOT_DIGEST_MISMATCH")
-
-    return [
-        dict(zip(SOURCE_HEADERS[:6], row[:6]))
-        for row in records
-    ]
+    validate_headers(headers[0])
+    width = len(headers[0])
+    return read_table(read_values(adapter, tab, pm_column_letter(width)))
 
 
-def verify_full_pm_destination(adapter, expected_projection):
-    """Verify complete PM source-owned state after export.
+def verify_full_pm_destination(adapter, expected_projection, *, previous_projection=None):
+    """Verify source-owned cells and, when needed, physical Reply 4+.
 
-    Ignore human-owned categories and historical reply display
-    differences, but never ignore ROOT IDs, source comments or
-    ordered reply IDs.
+    The canonical A:V verification preserves historical compatibility.
+    Extended replies MUST be checked against freshly read physical columns;
+    they cannot be proven correct from the truncated canonical grid.
     """
     latest = read_pm_grid(adapter, PM_TAB)
-    return verify_unchanged_pm(latest, expected_projection)
+    count = verify_unchanged_pm(latest, expected_projection)
+
+    from v2_pm_dynamic_reply_columns import reply_depth
+    if reply_depth(expected_projection) > 3:
+        if previous_projection is None:
+            raise RuntimeError("DYNAMIC_REPLY_BASELINE_REQUIRED")
+        from v2_pm_dynamic_readback import verify_dynamic_reply_readback
+        width = pm_grid_width(adapter, PM_TAB)
+        physical = read_values(adapter, PM_TAB, pm_column_letter(width))
+        from v2_pm_column_mapping import PMColumnMapping
+        PMColumnMapping.from_rows(physical, width)
+        verify_dynamic_reply_readback(
+            physical, expected_projection,
+            previous_projection=previous_projection,
+        )
+    return count
 
 
 def snapshot_tab(export_id):
@@ -248,65 +226,47 @@ def snapshot_tab(export_id):
 
 
 def persist_immutable_snapshot(adapter, tab, records):
-    expected = source_table(records)
-    service = adapter.service.spreadsheets()
+    """Write and verify immutable legacy or dynamic source snapshots.
 
+    Existing snapshots are never resized or overwritten on mismatch.
+    Recovery writes are permitted only for an identical row prefix.
+    """
+    expected = source_table(records)
+    width = len(expected[0])
+    end_col = pm_column_letter(width)
+    service = adapter.service.spreadsheets()
     metadata = service.get(
         spreadsheetId=adapter.spreadsheet_id,
         fields="sheets(properties(title))",
     ).execute()
-
-    exists = any(
-        s["properties"]["title"] == tab
-        for s in metadata.get("sheets", [])
-    )
-
+    exists = any(s["properties"]["title"] == tab for s in metadata.get("sheets", []))
     if not exists:
         service.batchUpdate(
             spreadsheetId=adapter.spreadsheet_id,
-            body={"requests": [{
-                "addSheet": {
-                    "properties": {
-                        "title": tab,
-                        "gridProperties": {
-                            "rowCount": len(expected) + 10,
-                            "columnCount": 8,
-                            "frozenRowCount": 1,
-                        },
-                    },
+            body={"requests": [{"addSheet": {"properties": {
+                "title": tab,
+                "gridProperties": {
+                    "rowCount": len(expected) + 10,
+                    "columnCount": width,
+                    "frozenRowCount": 1,
                 },
-            }]},
+            }}}]},
         ).execute()
-
-    existing = [
-        pad(row, 8)
-        for row in read_values(adapter, tab, "H")
-    ]
-
-    # Crash recovery is allowed only for an exact prefix.
-    # Never overwrite different historical snapshot data.
+    existing = [pad(row, width) for row in read_values(adapter, tab, end_col)]
     if existing != expected[:len(existing)]:
         raise RuntimeError("IMMUTABLE_SNAPSHOT_CONFLICT")
-
     if len(existing) < len(expected):
-        start = len(existing) + 1
-        remainder = expected[len(existing):]
+        first = len(existing) + 1
         service.values().update(
             spreadsheetId=adapter.spreadsheet_id,
-            range=f"'{tab}'!A{start}:H{len(expected)}",
+            range=f"'{tab}'!A{first}:{end_col}{len(expected)}",
             valueInputOption="RAW",
-            body={"values": remainder},
+            body={"values": expected[len(existing):]},
         ).execute()
-
-    actual = [
-        pad(row, 8)
-        for row in read_values(adapter, tab, "H")
-    ]
-
+    actual = [pad(row, width) for row in read_values(adapter, tab, end_col)]
     if actual != expected:
         raise RuntimeError("SNAPSHOT_READBACK_FAILED")
-
-    return expected[1][7]
+    return expected[1][-1]
 
 
 def checkpoint_save(adapter, checkpoint):
@@ -473,6 +433,23 @@ def prepare_new_root_insertions(
         "new_root_count": len(new_ids),
     }
 
+def legacy_source_for_dynamic_planner(previous, current):
+    """Use legacy delta only for comment changes; replies have a separate ID-aware planner."""
+    prior = {clean(r.get("Root Entry ID")): r for r in previous}
+    result = []
+    for row in current:
+        old = prior.get(clean(row.get("Root Entry ID")))
+        item = dict(row)
+        if old is not None:
+            for name in set(old) | set(row):
+                if name == "Reply Entry IDs" or (
+                    name.startswith("Reply ") and name[6:].isdigit()
+                ):
+                    item[name] = old.get(name, "")
+        result.append(item)
+    return result
+
+
 def export_verified_pm(
     *,
     backend_sheets: Any,
@@ -638,6 +615,22 @@ def export_verified_pm(
 
     previous = read_source_snapshot(staging, previous_tab)
 
+    from v2_pm_dynamic_reply_columns import reply_depth, plan_reply_column_expansion
+    from v2_pm_reply_delta import reply_ids
+    dynamic = reply_depth(current) > 3
+    if dynamic:
+        previous_roots = {clean(r.get("Root Entry ID")) for r in previous}
+        if any(
+            clean(r.get("Root Entry ID")) not in previous_roots
+            and len(reply_ids(r)) > 3 for r in current
+        ):
+            raise RuntimeError("DYNAMIC_NEW_ROOT_REQUIRES_REVIEW")
+        width = pm_grid_width(staging, PM_TAB)
+        physical = read_values(staging, PM_TAB, pm_column_letter(width))
+        column_plan = plan_reply_column_expansion(physical, width, current)
+    else:
+        column_plan = None
+
     root_plan = prepare_new_root_insertions(
         pm_values, previous, current, records
     )
@@ -654,7 +647,10 @@ def export_verified_pm(
         plan = plan_verified_pm_cells(
             root_plan["existing_pm_values"],
             previous,
-            root_plan["existing_current_projection"],
+            (legacy_source_for_dynamic_planner(
+                previous, root_plan["existing_current_projection"]
+            ) if dynamic else root_plan["existing_current_projection"]),
+            approved_author_aliases=config.get("reviewer_aliases", {}),
         )
 
     if plan["blockers"] or plan["new_root_count"]:
@@ -696,6 +692,41 @@ def export_verified_pm(
         raise RuntimeError("UNRECOVERABLE_CHECKPOINT_STATE")
 
     if checkpoint["state"] == "EXPORTING":
+        if dynamic:
+            from v2_pm_dynamic_column_writer import DynamicReplyColumnWriter
+            from v2_pm_dynamic_reply_writer import apply_dynamic_reply_plan
+            columns = DynamicReplyColumnWriter(
+                staging.service, destination, PM_TAB,
+                authorized_spreadsheet_id=destination,
+                authorized_tab=PM_TAB,
+            )
+            # Explicit staging-only opt-in. The column writer independently
+            # verifies every cell of each trailing blank column before reuse.
+            reuse_verified_blank = (
+                destination == STAGING_ID
+                and config.get("v2_pm_reuse_verified_blank_columns") is True
+            )
+            expanded = columns.apply(
+                current,
+                allow_writes=True,
+                reuse_trailing_blank=reuse_verified_blank,
+            )
+            if not expanded["verified"]:
+                raise RuntimeError("PM_DYNAMIC_HEADERS_UNVERIFIED")
+            width = pm_grid_width(staging, PM_TAB)
+            physical = read_values(staging, PM_TAB, pm_column_letter(width))
+            updated = apply_dynamic_reply_plan(
+                staging.service, destination, PM_TAB,
+                authorized_spreadsheet_id=destination,
+                authorized_tab=PM_TAB,
+                sheet_values=physical, grid_width=width,
+                previous_projection=previous,
+                current_projection=current,
+                approved_author_aliases=config.get("reviewer_aliases", {}),
+                allow_writes=True,
+            )
+            if not updated["verified"]:
+                raise RuntimeError("PM_DYNAMIC_REPLY_WRITE_UNVERIFIED")
         result = writer.apply(changes, allow_writes=True)
         if not result["verified"]:
             raise RuntimeError("PM_CELL_WRITE_UNVERIFIED")
@@ -716,7 +747,9 @@ def export_verified_pm(
 
         # Never certify an export based only on changed cells.
         # Re-read and verify the entire PM source-owned state.
-        verify_full_pm_destination(staging, current)
+        verify_full_pm_destination(
+            staging, current, previous_projection=previous,
+        )
 
         # The new snapshot is immutable and read-back verified
         # BEFORE the export can be marked as verified.
@@ -743,7 +776,9 @@ def export_verified_pm(
 
         # Recheck the whole PM destination, including ROOT IDs
         # and reply IDs, before checkpoint completion.
-        verify_full_pm_destination(staging, current)
+        verify_full_pm_destination(
+            staging, current, previous_projection=previous,
+        )
 
         # Recheck authorized PM cell values before completion.
         for change in changes:

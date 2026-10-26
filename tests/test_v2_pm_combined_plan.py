@@ -250,3 +250,52 @@ def test_reply_candidates_have_authorized_fields():
         "G2": "Reply 2",
         "V2": "Reply Entry IDs",
     }
+
+
+def test_approved_alias_only_changes_reply_author_display():
+    old = "S.A.I.D..F.A.R.H.A.T ? ok\n\n2026-10-05T21:53:49+03:00"
+    new = "Said Farhat ? ok\n\n2026-10-05T21:53:49+03:00"
+    result = plan_verified_pm_cells(
+        pm(replies=("Said Farhat — ok",), ids="r-a"),
+        source(replies=(old,), ids="r-a"),
+        source(replies=(new,), ids="r-a"),
+        approved_author_aliases={"S.A.I.D..F.A.R.H.A.T": "Said Farhat"},
+    )
+    assert result["blockers"] == []
+    assert result["cell_update_candidates"] == []
+
+
+def test_alias_without_approval_is_blocked():
+    before = source(replies=("Raw Name ? ok",), ids="r-a")
+    after = source(replies=("Resolved Name ? ok",), ids="r-a")
+    result = plan_verified_pm_cells(
+        pm(replies=("Resolved Name — ok",), ids="r-a"),
+        before, after,
+    )
+    assert result["blockers"]
+
+
+@pytest.mark.parametrize("changed", [
+    "Said Farhat ? CHANGED\n\n2026-10-05T21:53:49+03:00",
+    "Said Farhat ? ok\n\n2026-10-05T21:53:50+03:00",
+])
+def test_alias_must_not_hide_body_or_timestamp_edits(changed):
+    old = "S.A.I.D..F.A.R.H.A.T ? ok\n\n2026-10-05T21:53:49+03:00"
+    result = plan_verified_pm_cells(
+        pm(replies=("Said Farhat — ok",), ids="r-a"),
+        source(replies=(old,), ids="r-a"),
+        source(replies=(changed,), ids="r-a"),
+        approved_author_aliases={"S.A.I.D..F.A.R.H.A.T": "Said Farhat"},
+    )
+    assert result["blockers"]
+
+
+def test_alias_must_not_hide_reply_id_change():
+    old = "S.A.I.D..F.A.R.H.A.T ? ok"
+    result = plan_verified_pm_cells(
+        pm(replies=("Said Farhat — ok",), ids="r-a"),
+        source(replies=(old,), ids="r-a"),
+        source(replies=("Said Farhat ? ok",), ids="r-different"),
+        approved_author_aliases={"S.A.I.D..F.A.R.H.A.T": "Said Farhat"},
+    )
+    assert result["blockers"]

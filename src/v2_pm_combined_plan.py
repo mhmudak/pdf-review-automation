@@ -15,6 +15,8 @@ def plan_verified_pm_cells(
     sheet_values,
     previous_projection,
     current_projection,
+    *,
+    approved_author_aliases=None,
 ):
     if not sheet_values:
         raise ValueError("Empty PM sheet")
@@ -44,6 +46,33 @@ def plan_verified_pm_cells(
             "Reply 3": row[7],
             "Reply Entry IDs": row[21],
         })
+
+    # Ignore only verified author-prefix display normalization. Never
+    # suppress a changed reply body, timestamp, identity, or ordering.
+    # The caller must supply the explicitly approved configuration aliases.
+    aliases = approved_author_aliases or {}
+    normalized_current = []
+    for current_row in current_projection:
+        root = str(current_row.get("Root Entry ID") or "").strip()
+        old_row = previous.get(root)
+        candidate = dict(current_row)
+        if old_row is not None:
+            for field, old_text in old_row.items():
+                if not (field.startswith("Reply ") and field[6:].isdigit()):
+                    continue
+                original = str(old_text or "")
+                updated = str(current_row.get(field) or "")
+                for raw_author, canonical_author in aliases.items():
+                    raw_author = str(raw_author)
+                    canonical_author = str(canonical_author)
+                    if (
+                        raw_author and canonical_author
+                        and original.startswith(raw_author + " ")
+                        and updated == canonical_author + original[len(raw_author):]
+                    ):
+                        candidate[field] = original
+                        break
+        normalized_current.append(candidate)
 
     # Verify actual PM reply identities independently of policy_pm.
     # policy_pm represents source state and must never conceal
@@ -106,7 +135,7 @@ def plan_verified_pm_cells(
             policy_pm.append(dict(old))
 
     source = plan_verified_source_delta(
-        policy_pm, previous_projection, current_projection
+        policy_pm, previous_projection, normalized_current
     )
 
     comments = plan_pm_comment_cells(
@@ -119,7 +148,7 @@ def plan_verified_pm_cells(
     reply_source = plan_reply_changes(
         previous_projection,
         previous_projection,
-        current_projection,
+        normalized_current,
     )
 
     reply_cells = plan_pm_reply_cells(
@@ -142,7 +171,7 @@ def plan_verified_pm_cells(
 
     current_by_root = {
         str(row["Root Entry ID"]): row
-        for row in current_projection
+        for row in normalized_current
     }
 
     # Historical reply presentation differences are not new
