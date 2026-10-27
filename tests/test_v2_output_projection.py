@@ -131,3 +131,43 @@ def test_orphan_replies_fail_without_data_loss():
 
     with pytest.raises(ValueError, match="orphan replies"):
         project_backend_rows(records)
+
+
+def test_undated_reply4_appends_after_three_dated_replies():
+    # Reproduces staging root 79d2a07e...: Reply 4 has no PDF
+    # creation/modification dates and must not be placed first.
+    root = backend_entry("ROOT")
+    dated = [
+        backend_entry(
+            f"dated-{i}", "REPLY",
+            **{"Parent Entry ID": "ROOT",
+               "Created Date": f"2026-10-0{i}T07:40:00+03:00"},
+        ) for i in range(1, 4)
+    ]
+    undated = backend_entry(
+        "props-qa-reply4-20261026", "REPLY",
+        **{"Parent Entry ID": "ROOT",
+           "Created Date": "", "Modified Date": ""},
+    )
+    previous = project_backend_rows([root, *dated])["rows"][0]
+    current = project_backend_rows([undated, root, *reversed(dated)])["rows"][0]
+    assert previous["Reply Entry IDs"] == "dated-1, dated-2, dated-3"
+    assert current["Reply Entry IDs"] == (
+        "dated-1, dated-2, dated-3, props-qa-reply4-20261026"
+    )
+    assert current["Reply 4"].startswith("Hala Afifi ? props-qa-reply4")
+
+
+def test_undated_replies_are_deterministic_across_input_order():
+    root = backend_entry("ROOT")
+    dated = backend_entry("dated", "REPLY", **{
+        "Parent Entry ID": "ROOT",
+        "Created Date": "2026-10-01T07:40:00+03:00",
+    })
+    undated = [backend_entry(name, "REPLY", **{
+        "Parent Entry ID": "ROOT", "Created Date": "", "Modified Date": ""
+    }) for name in ("z-undated", "a-undated")]
+    rows = [[root, dated, *undated], [*reversed(undated), dated, root]]
+    assert [project_backend_rows(row)["rows"][0]["Reply Entry IDs"] for row in rows] == [
+        "dated, a-undated, z-undated", "dated, a-undated, z-undated"
+    ]

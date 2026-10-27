@@ -304,6 +304,12 @@ def project_entries(
         thread = sorted(
             replies[root_id],
             key=lambda item: (
+                # Missing/unparseable PDF dates are not proof that a reply
+                # predates dated replies. Keep dated replies in their
+                # established chronological order and sort undated replies
+                # last, deterministically by stable entry ID. The guarded
+                # delta planner still rejects real reorders/edits.
+                not bool(timestamp(item.get("created") or item.get("modified"))),
                 timestamp(item.get("created") or item.get("modified")),
                 str(item.get("entry_id") or ""),
             ),
