@@ -1,0 +1,17 @@
+# Cloud Build builds and pushes the one-shot Cloud Run Job image.
+# No deployment, job execution, Scheduler changes or spreadsheet writes.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file
+      - Dockerfile.job
+      - --tag
+      - ${_IMAGE}
+      - .
+images:
+  - ${_IMAGE}
+substitutions:
+  _IMAGE: europe-west1-docker.pkg.dev/props-pdf-review-automation/pdf-review-automation/pdf-review-automation:manual-job-build
+options:
+  logging: CLOUD_LOGGING_ONLY

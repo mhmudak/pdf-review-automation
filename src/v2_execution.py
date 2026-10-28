@@ -15,6 +15,20 @@ from v2_run import prepare_v2_run
 from v2_sheet_writer import apply_v2_mutations
 
 
+def reject_removed_active_roots(prepared: Any) -> None:
+    """Fail closed before writes when a new PDF removes existing ROOTs.
+
+    The PM exporter must never be the first layer to discover
+    a destructive source change: backend mutations precede export.
+    """
+    for change in prepared.change_plan.removed:
+        previous = change.previous or {}
+        relation = str(previous.get("Relation Type", "")).strip().upper()
+        active = str(previous.get("Active", "TRUE")).strip().upper()
+        if relation == "ROOT" and active not in {"FALSE", "0", "NO", ""}:
+            raise RuntimeError("SOURCE_ROOT_REMOVAL_REQUIRES_REVIEW")
+
+
 def execute_v2_pdf(
     *,
     sheets: SheetsAdapter,
@@ -104,6 +118,10 @@ def execute_v2_pdf(
         processed_at=processed_at,
     )
 
+    # Guard source integrity before any approval or backend mutation.
+    if config.get("v2_require_verified_pm_export") is True:
+        reject_removed_active_roots(prepared)
+
     approval_sync = {
         "approved_found": 0,
         "inserted": 0,
@@ -164,6 +182,10 @@ def execute_v2_pdf(
                 ),
                 processed_at=processed_at,
             )
+
+    # Recheck after author-rule promotion may replan the entries.
+    if config.get("v2_require_verified_pm_export") is True:
+        reject_removed_active_roots(prepared)
 
     review_rows = build_author_review_rows(
         list(prepared.entries)

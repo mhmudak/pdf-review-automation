@@ -13,6 +13,11 @@ from dotenv import load_dotenv
 
 from alerts import classify_pdf_result
 from notifier import notify_alert
+from v2_pipeline_notifications import (
+    dispatch_pipeline_alert,
+    verified_completion_fallback,
+    verified_identical_upload_ack,
+)
 from drive_adapter import DriveAdapter
 from extractor import (
     assess_master_compatibility,
@@ -45,6 +50,7 @@ from historical_authors import (
     load_historical_author_map,
 )
 from v2_backend import ensure_v2_backend
+from v2_release_gate import ensure_v2_runtime_safety
 
 
 load_dotenv()
@@ -83,14 +89,35 @@ def process_drive_folder(
     dry_run: bool = False,
 ) -> dict[str, Any]:
 
-    drive = DriveAdapter()
-
     config = load_config(config_path)
 
     v2_enabled = bool_env(
         "WORKFLOW2_V2_ENABLED",
         default=False,
     )
+
+    require_verified_pm_export = (
+        v2_enabled
+        and config.get("v2_require_verified_pm_export") is True
+    )
+
+    # Run before Drive initialization/API requests or any backend write.
+    ensure_v2_runtime_safety(
+        v2_enabled=v2_enabled,
+        dry_run=dry_run,
+        config=config,
+        output_spreadsheet_id=output_spreadsheet_id,
+    )
+
+    v2_pm_exporter = None
+
+    if require_verified_pm_export:
+        # Import before processing any PDF.
+        # Missing/incomplete coordinator must fail closed.
+        from v2_pm_export_coordinator import export_verified_pm
+        v2_pm_exporter = export_verified_pm
+
+    drive = DriveAdapter()
 
     historical_author_by_entry_id = (
         load_historical_author_map(config)
@@ -137,6 +164,10 @@ def process_drive_folder(
         folder_id
     )
 
+    if dry_run:
+        from v2_dry_run_limit import select_dry_run_pdfs
+        pdf_files = select_dry_run_pdfs(pdf_files)
+
     print(
         f"Drive scan complete: "
         f"{len(pdf_files)} PDF(s) found."
@@ -145,6 +176,31 @@ def process_drive_folder(
     # Nothing in the monitored folder means there is
     # nothing else to initialize or read.
     if not pdf_files:
+        # An empty folder does not necessarily mean that
+        # an earlier, interrupted export has completed.
+        # Recover from persisted backend records; never
+        # download or extract a PDF for this purpose.
+        if (
+            v2_enabled
+            and not dry_run
+            and require_verified_pm_export
+        ):
+            from v2_pm_export_coordinator import (
+                recover_pending_pm_exports,
+            )
+
+            recovery = recover_pending_pm_exports(
+                backend_sheets=SheetsAdapter(spreadsheet_id),
+                config=config,
+            )
+
+            if recovery["recovered"]:
+                print(
+                    "V2 PM recovery completed with empty "
+                    "Drive folder: "
+                    f"{recovery['recovered']} export(s)."
+                )
+
         return {
             "files_seen": 0,
             "results": [],
@@ -210,6 +266,26 @@ def process_drive_folder(
         # No database read, no PDF download,
         # no extraction, no output spreadsheet,
         # and no notification work.
+        if (
+            v2_enabled
+            and config.get("v2_require_verified_pm_export")
+            is True
+        ):
+            from v2_pm_export_coordinator import (
+                recover_pending_pm_exports,
+            )
+
+            recovery_result = recover_pending_pm_exports(
+                backend_sheets=backend_sheets,
+                config=config,
+            )
+
+            if recovery_result["recovered"]:
+                print(
+                    "V2 PM recovery completed: "
+                    f"{recovery_result['recovered']} export(s)."
+                )
+
         if not files_needing_processing:
             print(
                 "Preflight complete: "
@@ -297,6 +373,8 @@ def process_drive_folder(
         tmpdir = Path(tmp)
 
         for f in files_needing_processing:
+
+            route_result = None
 
             run_id = str(uuid.uuid4())
 
@@ -483,6 +561,10 @@ def process_drive_folder(
                             summary=summary,
                             drive_file=f,
                             run_id=run_id,
+                            historical_author_by_entry_id=(
+                                historical_author_by_entry_id
+                            ),
+                            v2_pm_exporter=v2_pm_exporter,
                             master_version=str(
                                 master_meta.get(
                                     "version",
@@ -501,6 +583,18 @@ def process_drive_folder(
                     if route_result[
                         "duplicate"
                     ]:
+                        # Evaluate against the registry loaded before
+                        # this Drive file was registered.
+                        duplicate_ack = verified_identical_upload_ack(
+                            file_id=f.file_id,
+                            sha256=summary.get("sha256", ""),
+                            previous_file=by_id.get(f.file_id),
+                            matching_file=by_sha256.get(
+                                str(summary.get("sha256", ""))
+                            ),
+                            route_result=route_result,
+                        )
+
                         duplicate_entry = (
                             registry_entry_for_processed_pdf(
                                 f,
@@ -527,12 +621,46 @@ def process_drive_folder(
                             or {}
                         )
 
+                        duplicate_alerts = []
+
+                        if duplicate_ack is not None:
+                            duplicate_alerts.append(duplicate_ack)
+
+                            try:
+                                notification_result = (
+                                    dispatch_pipeline_alert(
+                                        alert=duplicate_ack,
+                                        file_meta=f,
+                                        sheets=backend_sheets,
+                                        status="PROCESSED",
+                                        verified_export_required=(
+                                            require_verified_pm_export
+                                        ),
+                                        summary=summary,
+                                        export_result=route_result.get(
+                                            "pm_export_result"
+                                        ),
+                                    )
+                                )
+                                print(
+                                    "DUPLICATE UPLOAD NOTIFICATION: "
+                                    f"{notification_result}"
+                                )
+                            except Exception as notification_exc:
+                                print(
+                                    "WARNING: duplicate upload "
+                                    "acknowledgment failed: "
+                                    f"{type(notification_exc).__name__}: "
+                                    f"{notification_exc}"
+                                )
+
                         results.append(
                             {
                                 "file_id":
                                     f.file_id,
                                 "name":
                                     f.name,
+                                "alerts": duplicate_alerts,
                                 "action":
                                     "DUPLICATE_VERSION",
                                 "reason":
@@ -610,9 +738,20 @@ def process_drive_folder(
 
                     try:
                         notification_result = (
-                            notify_alert(
-                                alert
-                            )
+                            (
+    dispatch_pipeline_alert(
+        alert=alert,
+        file_meta=f,
+        sheets=backend_sheets,
+        status="PROCESSED",
+        verified_export_required=require_verified_pm_export,
+        summary=summary,
+        export_result=(
+            (route_result or {}).get("pm_export_result")
+        ),
+    )
+    if v2_enabled else notify_alert(alert)
+)
                         )
 
                         print(
@@ -630,6 +769,31 @@ def process_drive_folder(
                             f"{type(notification_exc).__name__}: "
                             f"{notification_exc}"
                         )
+
+                # Explicit verified completion if classification
+                # produced no PM-facing alert. No dry-run sends.
+                if v2_enabled and not dry_run and require_verified_pm_export:
+                    completion = verified_completion_fallback(
+                        alerts, route_result
+                    )
+                    if completion is not None:
+                        alerts.append(completion)
+                        try:
+                            dispatch_pipeline_alert(
+                                alert=completion,
+                                file_meta=f,
+                                sheets=backend_sheets,
+                                status="PROCESSED",
+                                verified_export_required=True,
+                                summary=summary,
+                                export_result=route_result.get("pm_export_result"),
+                            )
+                        except Exception as notification_exc:
+                            print(
+                                "WARNING: verified completion email: "
+                                f"{type(notification_exc).__name__}: "
+                                f"{notification_exc}"
+                            )
 
                 results.append(
                     {
@@ -712,9 +876,17 @@ def process_drive_folder(
 
                     try:
                         notification_result = (
-                            notify_alert(
-                                alert
-                            )
+                            (
+    dispatch_pipeline_alert(
+        alert=alert,
+        file_meta=f,
+        sheets=backend_sheets,
+        status="ERROR",
+        verified_export_required=require_verified_pm_export,
+        error=str(exc),
+    )
+    if v2_enabled else notify_alert(alert)
+)
                         )
 
                         print(

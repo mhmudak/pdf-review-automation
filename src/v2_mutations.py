@@ -530,6 +530,17 @@ def build_v2_mutations(
                 last_seen=now,
             )
 
+            # Preserve human-assigned categories when the
+            # newly extracted PDF supplies no category.
+            new_category = str(
+                canonical.get("Category") or ""
+            ).strip()
+
+            if not new_category:
+                canonical["Category"] = change.previous.get(
+                    "Category", ""
+                )
+
             updates.append(
                 canonical
             )

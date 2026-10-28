@@ -24,6 +24,7 @@ def synchronize_processed_pdf(
         dict[str, str] | None
     ) = None,
     master_version: str = "",
+    v2_pm_exporter: Any = None,
 ) -> dict[str, Any]:
     """
     Route one extracted PDF to either the legacy backend
@@ -33,6 +34,20 @@ def synchronize_processed_pdf(
     """
 
     if v2_enabled:
+        require_verified_export = (
+            config.get("v2_require_verified_pm_export")
+            is True
+        )
+
+        # Fail BEFORE backend mutation if verified export
+        # is required but no exporter has been connected.
+        if require_verified_export and v2_pm_exporter is None:
+            raise RuntimeError(
+                "V2_PM_EXPORTER_NOT_CONFIGURED: "
+                "refusing to process PDF without "
+                "a verified PM export destination."
+            )
+
         v2_result = execute_v2_pdf(
             sheets=backend_sheets,
             config=config,
@@ -48,6 +63,26 @@ def synchronize_processed_pdf(
                 historical_author_by_entry_id
             ),
         )
+
+        pm_export_result = None
+
+        if require_verified_export:
+            pm_export_result = v2_pm_exporter(
+                backend_sheets=backend_sheets,
+                output_sheets=output_sheets,
+                v2_result=v2_result,
+                drive_file=drive_file,
+                config=config,
+            )
+
+            if (
+                not isinstance(pm_export_result, dict)
+                or pm_export_result.get("verified") is not True
+            ):
+                raise RuntimeError(
+                    "V2_PM_EXPORT_NOT_VERIFIED: "
+                    "refusing to mark PDF as processed."
+                )
 
         author_summary = v2_result.get(
             "author_summary",
@@ -131,9 +166,11 @@ def synchronize_processed_pdf(
 
         return {
             "mode": "V2",
+            "pm_export_result": pm_export_result,
             "sync_stats": sync_stats,
             "duplicate": duplicate,
             "v2_result": v2_result,
+            "pm_export": pm_export_result,
         }
 
     # Legacy path.
