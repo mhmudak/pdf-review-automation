@@ -1,11 +1,11 @@
 """Checkpointed V2 PM export coordinator.
 
-STAGING ONLY in this implementation.
+Explicitly gated staging/production coordinator.
 Real backend projection, verified source comparison,
 guarded cell writes, immutable snapshots and checkpoints.
 
-Production PM writes, new ROOT insertion and notifications
-are deliberately not authorized.
+Production PM writes remain locked behind a separate authorization
+marker; production email additionally requires mode-specific approval.
 """
 
 from __future__ import annotations
@@ -68,7 +68,16 @@ def export_destination(config):
         if os.environ.get("NOTIFICATIONS_ENABLED", "").lower() in (
             "true", "1", "yes", "on",
         ):
-            raise PermissionError("PRODUCTION_PM_NOTIFICATIONS_REQUIRE_SEPARATE_RELEASE")
+            from v2_production_notification_gate import (
+                ensure_notification_delivery_authorized,
+            )
+            ensure_notification_delivery_authorized(
+                destination=destination,
+                mode=os.environ.get("NOTIFICATION_MODE", "OFF"),
+                notifications_on=True,
+                dry_run=False,  # Exporter is invoked only on write-enabled runs.
+                verified_export_required=True,
+            )
     else:
         raise PermissionError("PM_DESTINATION_NOT_ALLOWLISTED")
     return destination

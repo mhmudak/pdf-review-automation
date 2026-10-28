@@ -9,8 +9,8 @@ PM_TAB = "Trial PDF - All Data"
 def ensure_v2_runtime_safety(*, v2_enabled, dry_run, config, output_spreadsheet_id):
     """Fail closed on an enabled V2 mode with inconsistent export or mail gates.
 
-    This release does not authorize production PM writes. Notifications must
-    remain explicitly opted in, and only verified exports may notify the PM.
+    Production writes and email delivery require independent explicit gates.
+    Only a verified export may trigger a PM notification.
     """
     if not v2_enabled:
         return {"mode": "LEGACY"}
@@ -36,16 +36,17 @@ def ensure_v2_runtime_safety(*, v2_enabled, dry_run, config, output_spreadsheet_
         raise PermissionError("VERIFIED_EXPORT_DESTINATION_NOT_STAGING_OR_APPROVED_PRODUCTION")
     if production and not require_export:
         raise PermissionError("PRODUCTION_REQUIRES_VERIFIED_EXPORT")
-    if production and notifications_on:
-        raise PermissionError("PRODUCTION_PM_NOTIFICATIONS_REQUIRE_SEPARATE_RELEASE")
-
-    if not dry_run and notifications_on:
-        if not require_export:
-            raise RuntimeError("NOTIFICATIONS_REQUIRE_VERIFIED_PM_EXPORT")
-        if notification_mode not in {"TEST", "FINAL", "PRODUCTION"}:
-            raise RuntimeError("NOTIFICATION_MODE_INVALID_FOR_ENABLED_DELIVERY")
-        if notification_mode in {"FINAL", "PRODUCTION"}:
-            raise PermissionError("PM_NOTIFICATIONS_NOT_AUTHORIZED_WITH_STAGING_ONLY_EXPORT")
+    if notifications_on:
+        from v2_production_notification_gate import (
+            ensure_notification_delivery_authorized,
+        )
+        ensure_notification_delivery_authorized(
+            destination=destination,
+            mode=notification_mode,
+            notifications_on=True,
+            dry_run=dry_run,
+            verified_export_required=require_export,
+        )
 
     return {"mode": "V2", "destination": destination, "require_verified_export": require_export,
             "notification_mode": notification_mode if notifications_on else "OFF"}

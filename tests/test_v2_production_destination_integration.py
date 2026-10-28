@@ -34,11 +34,20 @@ def test_production_requires_both_separate_authorizations(monkeypatch):
     assert export_destination(config(PRODUCTION_ID, production=True)) == PRODUCTION_ID
 
 
-def test_production_never_allows_enabled_notifications(monkeypatch):
+def test_production_admin_notifications_require_separate_authorization(monkeypatch):
     monkeypatch.setenv("V2_PM_PRODUCTION_AUTHORIZED", "YES_I_AUTHORIZE_PRODUCTION_PM_WRITES")
     monkeypatch.setenv("NOTIFICATIONS_ENABLED", "true")
-    with pytest.raises(PermissionError, match="NOTIFICATIONS_REQUIRE_SEPARATE_RELEASE"):
+    monkeypatch.setenv("NOTIFICATION_MODE", "TEST")
+    monkeypatch.delenv("V2_PRODUCTION_NOTIFICATION_AUTHORIZED", raising=False)
+
+    with pytest.raises(PermissionError, match="PRODUCTION_ADMIN_TEST_EMAIL_NOT_AUTHORIZED"):
         export_destination(config(PRODUCTION_ID, production=True))
+
+    monkeypatch.setenv(
+        "V2_PRODUCTION_NOTIFICATION_AUTHORIZED",
+        "YES_I_AUTHORIZE_PRODUCTION_ADMIN_TEST_EMAIL",
+    )
+    assert export_destination(config(PRODUCTION_ID, production=True)) == PRODUCTION_ID
 
 
 def test_wrong_destination_or_tab_cannot_be_authorized(monkeypatch):
@@ -77,8 +86,18 @@ def test_runtime_release_gate_enforces_same_production_consent(monkeypatch):
     result = ensure_v2_runtime_safety(v2_enabled=True, dry_run=False, config=c, output_spreadsheet_id=PRODUCTION_ID)
     assert result["destination"] == PRODUCTION_ID
     monkeypatch.setenv("NOTIFICATIONS_ENABLED", "true")
-    with pytest.raises(PermissionError, match="NOTIFICATIONS_REQUIRE_SEPARATE_RELEASE"):
+    monkeypatch.setenv("NOTIFICATION_MODE", "TEST")
+    monkeypatch.delenv("V2_PRODUCTION_NOTIFICATION_AUTHORIZED", raising=False)
+
+    with pytest.raises(PermissionError, match="PRODUCTION_ADMIN_TEST_EMAIL_NOT_AUTHORIZED"):
         ensure_v2_runtime_safety(v2_enabled=True, dry_run=False, config=c, output_spreadsheet_id=PRODUCTION_ID)
+
+    monkeypatch.setenv(
+        "V2_PRODUCTION_NOTIFICATION_AUTHORIZED",
+        "YES_I_AUTHORIZE_PRODUCTION_ADMIN_TEST_EMAIL",
+    )
+    result = ensure_v2_runtime_safety(v2_enabled=True, dry_run=False, config=c, output_spreadsheet_id=PRODUCTION_ID)
+    assert result["notification_mode"] == "TEST"
 
 
 def test_runtime_production_denies_unverified_export(monkeypatch):

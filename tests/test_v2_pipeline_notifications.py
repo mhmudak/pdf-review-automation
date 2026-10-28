@@ -205,3 +205,44 @@ def test_unverified_export_id_cannot_authorize_success(monkeypatch):
 
     assert result["action"] == "UNVERIFIED_V2_SUCCESS_BLOCKED"
     assert sent == []
+
+
+def test_production_test_final_and_live_delivery_have_separate_keys(monkeypatch):
+    """A TEST/FINAL email must not block the later live PM notification."""
+    from v2_production_notification_gate import (
+        ADMIN_TEST_MARKER,
+        PM_DELIVERY_MARKER,
+        PRODUCTION_PM_ID,
+    )
+
+    monkeypatch.setenv("WORKFLOW2_OUTPUT_SPREADSHEET_ID", PRODUCTION_PM_ID)
+    monkeypatch.setenv("WORKFLOW2_DRY_RUN", "false")
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "true")
+    monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
+    monkeypatch.setenv("PM_EMAIL", "pm@example.com")
+
+    sheets = FakeSheets()
+    sent = []
+    sender = lambda *args: sent.append(args)
+    event_keys = []
+
+    for mode, marker, recipients in [
+        ("TEST", ADMIN_TEST_MARKER, ["admin@example.com"]),
+        ("FINAL", PM_DELIVERY_MARKER, ["pm@example.com", "admin@example.com"]),
+        ("PRODUCTION", PM_DELIVERY_MARKER, ["pm@example.com", "admin@example.com"]),
+    ]:
+        monkeypatch.setenv("NOTIFICATION_MODE", mode)
+        monkeypatch.setenv("V2_PRODUCTION_NOTIFICATION_AUTHORIZED", marker)
+        monkeypatch.setenv("PM_FINAL_TEST_AUTHORIZED", "true")
+
+        first = deliver(sheets, sender)
+        second = deliver(sheets, sender)
+        assert first["action"] == "SENT"
+        assert second["action"] == "ALREADY_SENT"
+        assert first["recipients"] == recipients
+        event_keys.append(first["event_key"])
+
+    assert len(set(event_keys)) == 3
+    assert len(sent) == 3
+    assert len(sheets.rows) == 4  # Header + exactly one record per mode.
+    assert all(row[4] == "SENT" for row in sheets.rows[1:])

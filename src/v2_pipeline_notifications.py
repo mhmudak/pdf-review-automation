@@ -33,6 +33,23 @@ def dispatch_pipeline_alert(
         return {"action": "NOTIFICATIONS_DISABLED", "sent": False}
 
     status = str(status).upper()
+    # Fail closed for production delivery even when this function is called
+    # directly. Staging-only tests retain their prior error-alert semantics.
+    from v2_production_notification_gate import (
+        PRODUCTION_PM_ID,
+        ensure_notification_delivery_authorized,
+    )
+    if os.getenv("WORKFLOW2_OUTPUT_SPREADSHEET_ID", "") == PRODUCTION_PM_ID:
+        ensure_notification_delivery_authorized(
+            destination=PRODUCTION_PM_ID,
+            mode=notification_mode(),
+            notifications_on=True,
+            dry_run=os.getenv("WORKFLOW2_DRY_RUN", "").strip().lower() in {
+                "true", "1", "yes", "on",
+            },
+            verified_export_required=verified_export_required,
+        )
+
     if status not in {"PROCESSED", "ERROR"}:
         raise ValueError("UNSUPPORTED_PIPELINE_NOTIFICATION_STATUS")
 
@@ -74,11 +91,20 @@ def dispatch_pipeline_alert(
         str(error) if status == "ERROR" else "",
     ))
 
-    key = event_key(
-        file_id,
-        "PIPELINE_" + status + "_" + code,
-        event_identity,
-    )
+    mode = notification_mode()
+    event_kind = "PIPELINE_" + status + "_" + code
+    # Admin-only TEST and PM-facing FINAL acceptance must not consume the
+    # delivery identity later used by an actual PRODUCTION notification.
+    # This changes only production TEST/FINAL event keys; staging and the
+    # established production delivery identity remain unchanged.
+    if (
+        os.getenv("WORKFLOW2_OUTPUT_SPREADSHEET_ID", "").strip()
+        == PRODUCTION_PM_ID
+        and mode in {"TEST", "FINAL"}
+    ):
+        event_kind += "_DELIVERY_MODE_" + mode
+
+    key = event_key(file_id, event_kind, event_identity)
 
     audiences = [
         str(value).upper()
@@ -95,7 +121,6 @@ def dispatch_pipeline_alert(
         # Do not invent a notification recipient.
         return {"action": "NO_ALERT_AUDIENCE", "sent": False}
 
-    mode = notification_mode()
 
     intent = {
         "notify": True,

@@ -15,16 +15,24 @@ def _enabled(name: str) -> bool:
 
 
 def run_once(pipeline_fn=None) -> dict:
-    """One invocation only; production authorization remains unavailable."""
+    """One invocation; production email requires separate exact authorization."""
     if not _enabled("WORKFLOW2_V2_ENABLED"):
         raise RuntimeError("JOB_REQUIRES_EXPLICIT_V2_MODE")
 
-    # The deployed release is staging-only. An accidental override to
-    # non-test notifications must fail before touching Drive or Sheets.
+    # Fail closed BEFORE importing the pipeline or touching Drive/Sheets.
     notifications_on = _enabled("NOTIFICATIONS_ENABLED")
     mode = os.getenv("NOTIFICATION_MODE", "OFF").strip().upper()
-    if notifications_on and mode != "TEST":
-        raise PermissionError("JOB_PM_NOTIFICATIONS_NOT_AUTHORIZED")
+    if notifications_on:
+        from v2_production_notification_gate import (
+            ensure_notification_delivery_authorized,
+        )
+        ensure_notification_delivery_authorized(
+            destination=os.getenv("WORKFLOW2_OUTPUT_SPREADSHEET_ID", ""),
+            mode=mode,
+            notifications_on=True,
+            dry_run=_enabled("WORKFLOW2_DRY_RUN"),
+            verified_export_required=True,  # Config verified again in pipeline.
+        )
 
     if pipeline_fn is None:
         from http_service import _run_pipeline
